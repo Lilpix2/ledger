@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from ledger.models.accounts import AccountManager
+from ledger.controllers.accounts import AccountManager
 
 
 def main():

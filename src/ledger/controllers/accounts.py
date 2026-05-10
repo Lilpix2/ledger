@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .data_books import Ledger, Journal
-from .data_class import JournalTransaction
+from ..models.data_books import Ledger, Journal
+from ..models.data_class import JournalTransaction
 from ..constants import PARENTS
 
 class Account:

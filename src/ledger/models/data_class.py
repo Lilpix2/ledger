@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
+from ..constants import DATE_STR
 
 
 @dataclass
@@ -10,6 +11,16 @@ class JournalTransaction:
     debit_acct: int
     amount: int
 
+    def __dict__(self):
+        output = {
+            'date': self.date.strftime(DATE_STR),
+            'description': self.description,
+            'credit_acct': self.credit_acct,
+            'debit_acct': self.debit_acct,
+            'amount': self.amount
+        }
+        return output
+
 
 @dataclass
 class LedgerEntry:
@@ -18,3 +29,13 @@ class LedgerEntry:
     credit: int
     debit: int
     balance: int
+
+    def __dict__(self):
+        output = {
+            'date': self.date.strftime(DATE_STR),
+            'description': self.description,
+            'credit': self.credit_acct,
+            'debit': self.debit_acct,
+            'balance': self.amount
+        }
+        return output
