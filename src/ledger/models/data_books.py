@@ -1,10 +1,12 @@
-from .data_class import JournalTransaction, LedgerEntry
-from ledger.constants import DATE_STR
+"""
+Core models for the double-entry accounting system.
+Amounts are tracked in cents (int) to avoid floating-point issues.
+"""
+
 from datetime import datetime
-"""
-Has the main models for my accounting system, It is a basic implementation of double book accounting,
-Current design choices Include using the int type to track amounts in cents
-"""
+
+from .data_class import JournalTransaction, LedgerEntry
+from ..constants import DATE_STR
 
 class Journal:
     def __init__(self):
@@ -61,4 +63,7 @@ class Ledger:
         return self.entries.get(txn_id)
     
     def clear_entries(self):
-        self.__init__()
+        self.entries = {}
+        self.sorted_ids = []
+        self.id_num = 0
+        self.balance = 0

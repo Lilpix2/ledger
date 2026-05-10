@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
+
+
 @dataclass
 class JournalTransaction:
     date: datetime
@@ -8,7 +10,6 @@ class JournalTransaction:
     debit_acct: int
     amount: int
 
-    
 
 @dataclass
 class LedgerEntry:
