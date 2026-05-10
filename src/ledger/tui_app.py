@@ -238,7 +238,8 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
 
     def compose(self) -> ComposeResult:
         yield Static("── Add Transaction ──", id="title")
-        yield Static("", id="account-list")
+        yield Input(placeholder="Filter accounts by name...", id="acct-filter")
+        yield DataTable(id="acct-table")
 
         with Horizontal(id="date-row"):
             yield Input(
@@ -257,14 +258,25 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
             yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
+        self._populate_table()
+        self.query_one("#txn-date", Input).focus()
+
+    def _populate_table(self, query: str = "") -> None:
+        """Rebuild the account DataTable, optionally filtered by name."""
+        table = self.query_one("#acct-table", DataTable)
+        table.clear()
+        table.add_columns("ID", "Name", "Type")
+        table.zebra_stripes = True
+        table.cursor_type = "row"
+
+        q = query.strip().lower()
         accounts = self.app.manager.accounts  # type: ignore[attr-defined]
-        lines = ["Available accounts:"]
         for acct_id, acct in sorted(accounts.items()):
             if acct_id == 0:
                 continue
-            lines.append(f"  {acct_id}: {acct.name}  [{acct.acct_type}]")
-        self.query_one("#account-list", Static).update("\n".join(lines))
-        self.query_one("#txn-date", Input).focus()
+            if q and q not in acct.name.lower():
+                continue
+            table.add_row(str(acct_id), acct.name, acct.acct_type, key=str(acct_id))
 
     # ── Real-time validation ────────────────────────
 
@@ -309,6 +321,22 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
             input_w.remove_class("valid", "invalid")
             return
         _set_valid(input_w, value.isnumeric() and int(value) > 0)
+
+    # ── Filter / Row selection ──────────────────────
+
+    @on(Input.Changed, "#acct-filter")
+    def _filter_accounts(self, event: Input.Changed) -> None:
+        self._populate_table(event.value.strip())
+
+    @on(DataTable.RowSelected, "#acct-table")
+    def _select_account_row(self, event: DataTable.RowSelected) -> None:
+        """When a row is clicked, fill the focused debit/credit input."""
+        acct_id = str(event.row_key)  # Row.Key is a str subclass
+        focused = self.focused if hasattr(self, "focused") else None
+        if focused is None or focused.id not in ("txn-debit", "txn-credit"):
+            return
+        focused.value = acct_id
+        _set_valid(focused, True)
 
     # ── Calendar ────────────────────────────────────
 
@@ -462,13 +490,14 @@ class LedgerApp(App[None]):
         content-align: center middle;
     }
 
-    AddTransactionScreen > #account-list {
-        min-height: 8;
-        max-height: 12;
-        overflow-y: auto;
-        border: solid $foreground 10%;
-        padding: 0 1;
+    AddTransactionScreen #acct-filter {
         margin: 0 0 1 0;
+    }
+
+    AddTransactionScreen #acct-table {
+        height: 10;
+        margin: 0 0 1 0;
+        border: solid $foreground 10%;
     }
 
     AddAccountScreen #parent-selector {
