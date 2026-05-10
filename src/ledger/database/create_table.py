@@ -4,7 +4,8 @@ CREATE_ACCOUNTS = """
 CREATE TABLE IF NOT EXISTS accounts (
     account_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
-    parent_id INTEGER REFERENCES accounts(account_id)
+    parent_id INTEGER REFERENCES accounts(account_id),
+    acct_type TEXT NOT NULL DEFAULT 'ASSET'
 );
 """
 

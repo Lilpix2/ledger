@@ -162,7 +162,7 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
         def _add_children(parent_node, parent_id: int) -> None:
             for child_id in tree_data.get(parent_id, []):
                 account = manager.accounts[child_id]
-                label = f"{account.name}  [dim](ID {child_id})[/]"
+                label = f"{account.name}  [dim](ID {child_id})  [{account.acct_type}][/]"
                 node = parent_node.add(label, data={"account_id": child_id})
                 _add_children(node, child_id)
 
@@ -262,7 +262,7 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
         for acct_id, acct in sorted(accounts.items()):
             if acct_id == 0:
                 continue
-            lines.append(f"  {acct_id}: {acct.name}")
+            lines.append(f"  {acct_id}: {acct.name}  [{acct.acct_type}]")
         self.query_one("#account-list", Static).update("\n".join(lines))
         self.query_one("#txn-date", Input).focus()
 
@@ -563,7 +563,7 @@ class LedgerApp(App[None]):
             for child_id in tree_data.get(parent_id, []):
                 account = self.manager.accounts[child_id]
                 balance_cents = self.manager.get_display_balance(child_id)
-                label = f"{account.name}  (${balance_cents/100:,.2f})"
+                label = f"{account.name}  [dim]({account.acct_type})[/]  (${balance_cents/100:,.2f})"
                 node = parent_node.add(label, data={"account_id": child_id})
                 _add_children(node, child_id)
 
@@ -584,10 +584,11 @@ class LedgerApp(App[None]):
             direction = "debit-normal" if self.manager.is_debit_normal(account_id) else "credit-normal"
 
             msg = (
-                f"[bold]{account.name}[/]\n"
+                f"[bold]{account.name}[/]  [dim]({account.acct_type})[/]\n"
                 f"Display balance: ${display_bal/100:,.2f}\n"
                 f"Raw balance: ${raw_bal/100:,.2f}\n"
                 f"Normal: {direction}\n"
+                f"Type: {account.acct_type}\n"
             )
             if account.parent:
                 parent_name = self.manager.accounts[account.parent].name

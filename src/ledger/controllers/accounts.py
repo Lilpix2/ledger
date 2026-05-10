@@ -6,24 +6,24 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ..constants import PARENTS, DATE_STR
+from ..constants import PARENTS, ACCT_TYPE_MAP, DATE_STR
 from ..database.database_controller import DatabaseController
 from ..models.data_books import Ledger, Journal
 from ..models.data_class import JournalTransaction
 
 DEFAULT_DB_PATH = "data/journal.db"
 
-# Normal balance direction for top-level account categories.
-# Debit-normal (assets, expenses): debits increase the balance.
-# Credit-normal (liabilities, equity, income): credits increase the balance.
-DEBIT_NORMAL_NAMES = frozenset({"assets", "expenses"})
-CREDIT_NORMAL_NAMES = frozenset({"liabilities", "equity", "income"})
+# Account types and their normal balance direction.
+# Debit-normal: ASSET, EXPENSE  (debits increase the balance)
+# Credit-normal: LIABILITY, EQUITY, INCOME  (credits increase the balance)
+DEBIT_NORMAL_TYPES = frozenset({"ASSET", "EXPENSE"})
 
 
 class Account:
-    def __init__(self, name: str, parent: int | None = None):
+    def __init__(self, name: str, parent: int | None = None, acct_type: str = "ASSET"):
         self.name = name
         self.parent = parent
+        self.acct_type = acct_type
         self.ledger = Ledger()
 
     def __eq__(self, value):
@@ -54,9 +54,9 @@ class AccountManager:
         if not db_accounts:
             self._generate_parents()
         else:
-            for acct_id, name, parent_id in db_accounts:
+            for acct_id, name, parent_id, acct_type in db_accounts:
                 parent = parent_id if parent_id is not None else 0
-                self.accounts[acct_id] = Account(name, parent)
+                self.accounts[acct_id] = Account(name, parent, acct_type)
 
             for _, date_str, desc, credit_id, debit_id, amount in self.db.load_transactions():
                 date = datetime.strptime(date_str, DATE_STR)
@@ -68,17 +68,26 @@ class AccountManager:
     def _generate_parents(self):
         """Create the top-level parent accounts (assets, liabilities, etc.)."""
         for name in PARENTS:
-            self.add_account(name, 0)
+            acct_type = ACCT_TYPE_MAP.get(name, "ASSET")
+            self.add_account(name, 0, acct_type)
 
     # ── Accounts ────────────────────────────────────────────────────
 
-    def add_account(self, name: str, parent: int | None = None) -> int:
+    def add_account(
+        self, name: str, parent: int | None = None, acct_type: str | None = None
+    ) -> int:
         if name in [a.name for a in self.accounts.values()]:
             raise ValueError(f"Account '{name}' already exists")
 
+        # Inherit type from parent if not explicitly provided
+        if acct_type is None and parent is not None and parent in self.accounts:
+            acct_type = self.accounts[parent].acct_type
+        elif acct_type is None:
+            acct_type = "ASSET"
+
         db_parent = parent if parent != 0 else None
-        acct_id = self.db.save_account(name, db_parent)
-        self.accounts[acct_id] = Account(name, parent)
+        acct_id = self.db.save_account(name, db_parent, acct_type)
+        self.accounts[acct_id] = Account(name, parent, acct_type)
         return acct_id
 
     # ── Transactions ────────────────────────────────────────────────
@@ -200,11 +209,12 @@ class AccountManager:
             current = parent
 
     def is_debit_normal(self, account_id: int) -> bool:
-        """Return ``True`` if *account_id* is debit-normal (assets, expenses)."""
-        root_id = self.get_top_level_parent(account_id)
-        if root_id == 0:
-            return True  # root — doesn't matter
-        return self.accounts[root_id].name.lower() in DEBIT_NORMAL_NAMES
+        """Return ``True`` if *account_id* is debit-normal (ASSET or EXPENSE).
+
+        O(1) — uses the stored `acct_type` directly instead of walking
+        up the tree to find the top-level parent.
+        """
+        return self.accounts[account_id].acct_type in DEBIT_NORMAL_TYPES
 
     def get_display_balance(self, account_id: int) -> int:
         """Return the balance as a positive number in its **normal** direction.
@@ -223,6 +233,8 @@ class AccountManager:
     def check_accounting_equation(self) -> dict:
         """Return a snapshot of the accounting equation.
 
+        Aggregates by `acct_type` (no tree-walking needed).
+
         Returns
         -------
         dict
@@ -231,18 +243,22 @@ class AccountManager:
             liabilities), ``lhs`` (assets) and ``rhs`` (liabilities +
             equity + net_income) — all amounts in cents, **display-normal**.
         """
-        tree = self.build_tree()
-        raw: dict[str, int] = {}
-        for child_id in tree.get(0, []):
-            name = self.accounts[child_id].name.lower()
-            raw[name] = self.aggregated_balance(child_id)
+        raw: dict[str, int] = {
+            "ASSET": 0, "LIABILITY": 0, "EQUITY": 0,
+            "INCOME": 0, "EXPENSE": 0,
+        }
+
+        for acct_id, account in self.accounts.items():
+            if acct_id == 0:
+                continue
+            raw[account.acct_type] += account.get_balance()
 
         # Convert raw → display-normal
-        a = raw.get("assets", 0)               # debit-normal
-        l = -raw.get("liabilities", 0)          # credit-normal → flip
-        e = -raw.get("equity", 0)               # credit-normal → flip
-        i = -raw.get("income", 0)               # credit-normal → flip
-        ex = raw.get("expenses", 0)             # debit-normal
+        a = raw["ASSET"]                 # debit-normal
+        l = -raw["LIABILITY"]            # credit-normal → flip
+        e = -raw["EQUITY"]               # credit-normal → flip
+        i = -raw["INCOME"]               # credit-normal → flip
+        ex = raw["EXPENSE"]              # debit-normal
 
         net_income = i - ex
         rhs = l + e + net_income

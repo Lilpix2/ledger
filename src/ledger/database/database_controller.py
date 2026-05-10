@@ -23,17 +23,28 @@ class DatabaseController:
         return conn
 
     def ensure_tables(self):
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist (and migrate existing ones)."""
         with self._connect() as conn:
             ensure_tables(conn)
+            # Migration: add acct_type column for existing databases
+            try:
+                conn.execute(
+                    "ALTER TABLE accounts ADD COLUMN acct_type TEXT NOT NULL DEFAULT 'ASSET'"
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
-    def load_accounts(self) -> list[tuple[int, str, int | None]]:
-        """Return list of (account_id, name, parent_id) for all accounts."""
+    def load_accounts(self) -> list[tuple[int, str, int | None, str]]:
+        """Return list of (account_id, name, parent_id, acct_type) for all accounts."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT account_id, name, parent_id FROM accounts ORDER BY account_id"
+                "SELECT account_id, name, parent_id, acct_type FROM accounts ORDER BY account_id"
             ).fetchall()
-            return [(r["account_id"], r["name"], r["parent_id"]) for r in rows]
+            return [
+                (r["account_id"], r["name"], r["parent_id"], r["acct_type"])
+                for r in rows
+            ]
 
     def load_transactions(self) -> list[tuple[int, str, str, int, int, int]]:
         """Return list of (journal_id, date, description, credit_id, debit_id, amount)."""
@@ -53,12 +64,14 @@ class DatabaseController:
                 for r in rows
             ]
 
-    def save_account(self, name: str, parent_id: int | None = None) -> int:
+    def save_account(
+        self, name: str, parent_id: int | None = None, acct_type: str = "ASSET"
+    ) -> int:
         """Insert a new account and return its account_id."""
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO accounts (name, parent_id) VALUES (?, ?)",
-                (name, parent_id),
+                "INSERT INTO accounts (name, parent_id, acct_type) VALUES (?, ?, ?)",
+                (name, parent_id, acct_type),
             )
             return cur.lastrowid
 
