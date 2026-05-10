@@ -2,7 +2,8 @@
 Textual TUI for the ledger system.
 """
 
-from datetime import datetime
+import calendar
+from datetime import datetime, date as date_type
 
 from textual import on
 from textual.app import App, ComposeResult
@@ -24,7 +25,112 @@ from .constants import DATE_STR
 from .controllers.accounts import AccountManager
 
 
-# ── Modal Screens ──────────────────────────────────────────────────
+# ── Calendar / Date Picker ─────────────────────────────────────────
+
+
+class DatePickerModal(ModalScreen[datetime | None]):
+    """Modal month-view calendar to pick a date."""
+
+    def __init__(self, year: int | None = None, month: int | None = None) -> None:
+        super().__init__()
+        now = datetime.now()
+        self.current_year = year or now.year
+        self.current_month = month or now.month
+        self.today = now
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="cal-container"):
+            with Horizontal(id="cal-header"):
+                yield Button("◀", id="cal-prev")
+                yield Static("", id="cal-month-label")
+                yield Button("▶", id="cal-next")
+            yield DataTable(
+                id="cal-grid",
+                cursor_type="cell",
+                show_row_labels=False,
+                zebra_stripes=False,
+            )
+            with Horizontal(id="cal-footer"):
+                yield Button("Today", id="cal-today")
+                yield Button("Cancel", variant="error", id="cal-cancel")
+
+    def on_mount(self) -> None:
+        self._render_month()
+
+    def _render_month(self) -> None:
+        """Render the current month in the grid."""
+        # Month/year label
+        month_name = date_type(self.current_year, self.current_month, 1).strftime("%B %Y")
+        self.query_one("#cal-month-label", Static).update(f"[bold]{month_name}[/]")
+
+        # Build grid
+        table = self.query_one("#cal-grid", DataTable)
+        table.clear()
+        table.add_columns("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+
+        cal = calendar.monthcalendar(self.current_year, self.current_month)
+        today_cell = None
+
+        for week_idx, week in enumerate(cal):
+            row = []
+            for col_idx, day in enumerate(week):
+                if day == 0:
+                    row.append("")
+                else:
+                    # Highlight today
+                    if (
+                        self.today.year == self.current_year
+                        and self.today.month == self.current_month
+                        and self.today.day == day
+                    ):
+                        row.append(f"[reverse]{day}[/]")
+                    else:
+                        row.append(str(day))
+
+            table.add_row(*row)
+
+    @on(Button.Pressed, "#cal-prev")
+    def _prev_month(self) -> None:
+        self.current_month -= 1
+        if self.current_month < 1:
+            self.current_month = 12
+            self.current_year -= 1
+        self._render_month()
+
+    @on(Button.Pressed, "#cal-next")
+    def _next_month(self) -> None:
+        self.current_month += 1
+        if self.current_month > 12:
+            self.current_month = 1
+            self.current_year += 1
+        self._render_month()
+
+    @on(Button.Pressed, "#cal-today")
+    def _go_today(self) -> None:
+        self.current_year = self.today.year
+        self.current_month = self.today.month
+        self._render_month()
+
+    @on(Button.Pressed, "#cal-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(DataTable.CellSelected)
+    def _day_selected(self, event: DataTable.CellSelected) -> None:
+        """User clicked a day — dismiss with the selected datetime."""
+        day_str = event.value.strip()
+        if not day_str:
+            return
+        # Strip any rich markup (reverse highlighting)
+        day_str = day_str.replace("[reverse]", "").replace("[/]", "").strip()
+        if not day_str.isnumeric():
+            return
+        day = int(day_str)
+        selected = datetime(self.current_year, self.current_month, day, 0, 0, 0)
+        self.dismiss(selected)
+
+
+# ── Modal: Add Account ─────────────────────────────────────────────
 
 
 class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
@@ -67,13 +173,25 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
         self.dismiss(None)
 
 
+# ── Modal: Add Transaction ─────────────────────────────────────────
+
+
 class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | None]):
     """Modal for creating a new journal transaction."""
 
     def compose(self) -> ComposeResult:
         yield Static("── Add Transaction ──", id="title")
         yield Static("", id="account-list")
-        yield Input(placeholder="Date (MM-DD-YYYY H:M:S)", id="txn-date")
+
+        # Date row: input + calendar button
+        with Horizontal(id="date-row"):
+            yield Input(
+                placeholder="MM-DD-YYYY H:M:S",
+                id="txn-date",
+                value=datetime.now().strftime(DATE_STR),
+            )
+            yield Button("📅", id="cal-btn", variant="default")
+
         yield Input(placeholder="Description", id="txn-desc")
         yield Input(placeholder="Debit account ID", id="txn-debit")
         yield Input(placeholder="Credit account ID", id="txn-credit")
@@ -91,6 +209,17 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
                 continue
             lines.append(f"  {acct_id}: {acct.name}")
         self.query_one("#account-list", Static).update("\n".join(lines))
+
+    @on(Button.Pressed, "#cal-btn")
+    def _open_calendar(self) -> None:
+        """Open the calendar picker modal."""
+
+        def _handle_date(selected: datetime | None) -> None:
+            if selected is not None:
+                date_input = self.query_one("#txn-date", Input)
+                date_input.value = selected.strftime(DATE_STR)
+
+        self.app.push_screen(DatePickerModal(), _handle_date)
 
     @on(Button.Pressed, "#submit")
     def submit(self) -> None:
@@ -161,7 +290,41 @@ class LedgerApp(App[None]):
         padding: 0 0 1 0;
     }
 
-    /* ── Modal screen shared ─────────────────────── */
+    /* ── Calendar modal ──────────────────────────── */
+    DatePickerModal > #cal-container {
+        width: 38;
+        padding: 1;
+        border: thick $primary;
+        background: $surface;
+    }
+
+    DatePickerModal #cal-header {
+        height: 3;
+        align: center middle;
+    }
+
+    DatePickerModal #cal-header > #cal-prev,
+    DatePickerModal #cal-header > #cal-next {
+        width: 6;
+    }
+
+    DatePickerModal #cal-month-label {
+        width: 1fr;
+        content-align: center middle;
+        text-style: bold;
+    }
+
+    DatePickerModal #cal-footer {
+        height: 3;
+        align: center middle;
+        margin: 1 0 0 0;
+    }
+
+    DatePickerModal #cal-footer > Button {
+        margin: 0 1;
+    }
+
+    /* ── Account / Transaction modal shared ──────── */
     AddAccountScreen, AddTransactionScreen {
         align: center middle;
     }
@@ -184,7 +347,21 @@ class LedgerApp(App[None]):
         margin: 0 0 1 0;
     }
 
-    AddAccountScreen Input,
+    /* Transaction date row: input + calendar button */
+    AddTransactionScreen #date-row {
+        height: 3;
+        margin: 0 0 1 0;
+    }
+
+    AddTransactionScreen #date-row > #txn-date {
+        width: 1fr;
+    }
+
+    AddTransactionScreen #date-row > #cal-btn {
+        width: 5;
+        margin: 0 0 0 1;
+    }
+
     AddTransactionScreen Input {
         margin: 0 0 1 0;
     }
@@ -232,7 +409,11 @@ class LedgerApp(App[None]):
     # ── Tree ────────────────────────────────────────
 
     def _populate_tree(self) -> None:
-        """Rebuild the account tree widget from the current state."""
+        """Rebuild the account tree widget from the current state.
+
+        Uses aggregated_balance so parent accounts show the sum
+        of all their children's balances.
+        """
         tree = self.query_one("#account-tree", Tree)
         tree.clear()
 
@@ -241,7 +422,7 @@ class LedgerApp(App[None]):
         def _add_children(parent_node, parent_id: int) -> None:
             for child_id in tree_data.get(parent_id, []):
                 account = self.manager.accounts[child_id]
-                balance_cents = account.get_balance()
+                balance_cents = self.manager.aggregated_balance(child_id)
                 label = f"{account.name}  (${balance_cents/100:,.2f})"
                 node = parent_node.add(label, data={"account_id": child_id})
                 _add_children(node, child_id)
@@ -255,13 +436,17 @@ class LedgerApp(App[None]):
         account_id = event.node.data.get("account_id") if event.node.data else None
         if account_id is not None:
             account = self.manager.accounts[account_id]
-            self.notify(
+            aggregated = self.manager.aggregated_balance(account_id)
+            personal = account.get_balance()
+            msg = (
                 f"[bold]{account.name}[/]\n"
-                f"Balance: ${account.get_balance()/100:,.2f}\n"
-                f"Parent: {self.manager.accounts[account.parent].name if account.parent else 'None'}",
-                title="Account Details",
-                timeout=5,
+                f"Aggregate balance: ${aggregated/100:,.2f}\n"
+                f"Personal balance: ${personal/100:,.2f}\n"
             )
+            if account.parent:
+                parent_name = self.manager.accounts[account.parent].name
+                msg += f"Parent: {parent_name}"
+            self.notify(msg, title="Account Details", timeout=5)
 
     # ── Transaction Table ───────────────────────────
 

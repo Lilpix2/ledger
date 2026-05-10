@@ -130,6 +130,14 @@ class AccountManager:
             else:
                 print("-" * dashes + str(self.accounts[item]))
 
+    def aggregated_balance(self, account_id: int) -> int:
+        """Sum the balance of an account and all its descendants."""
+        total = self.accounts[account_id].get_balance()
+        tree = self.build_tree()
+        for child_id in tree.get(account_id, []):
+            total += self.aggregated_balance(child_id)
+        return total
+
     def print_tree(self):
         tree = self.build_tree()
         for item in tree[0]:
