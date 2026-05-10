@@ -59,34 +59,28 @@ class DatePickerModal(ModalScreen[datetime | None]):
 
     def _render_month(self) -> None:
         """Render the current month in the grid."""
-        # Month/year label
         month_name = date_type(self.current_year, self.current_month, 1).strftime("%B %Y")
         self.query_one("#cal-month-label", Static).update(f"[bold]{month_name}[/]")
 
-        # Build grid
         table = self.query_one("#cal-grid", DataTable)
         table.clear()
         table.add_columns("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
 
         cal = calendar.monthcalendar(self.current_year, self.current_month)
-        today_cell = None
 
-        for week_idx, week in enumerate(cal):
+        for week in cal:
             row = []
-            for col_idx, day in enumerate(week):
+            for day in week:
                 if day == 0:
                     row.append("")
+                elif (
+                    self.today.year == self.current_year
+                    and self.today.month == self.current_month
+                    and self.today.day == day
+                ):
+                    row.append(f"[reverse]{day}[/]")
                 else:
-                    # Highlight today
-                    if (
-                        self.today.year == self.current_year
-                        and self.today.month == self.current_month
-                        and self.today.day == day
-                    ):
-                        row.append(f"[reverse]{day}[/]")
-                    else:
-                        row.append(str(day))
-
+                    row.append(str(day))
             table.add_row(*row)
 
     @on(Button.Pressed, "#cal-prev")
@@ -117,17 +111,28 @@ class DatePickerModal(ModalScreen[datetime | None]):
 
     @on(DataTable.CellSelected)
     def _day_selected(self, event: DataTable.CellSelected) -> None:
-        """User clicked a day — dismiss with the selected datetime."""
         day_str = event.value.strip()
         if not day_str:
             return
-        # Strip any rich markup (reverse highlighting)
         day_str = day_str.replace("[reverse]", "").replace("[/]", "").strip()
         if not day_str.isnumeric():
             return
         day = int(day_str)
         selected = datetime(self.current_year, self.current_month, day, 0, 0, 0)
         self.dismiss(selected)
+
+
+# ── Helpers (input validation) ────────────────────────────────────
+
+
+def _set_valid(widget: Input, valid: bool) -> None:
+    """Toggle ``valid`` / ``invalid`` CSS class on an Input."""
+    widget.remove_class("valid", "invalid")
+    widget.add_class("valid" if valid else "invalid")
+
+
+def _valid_account_id(value: str, account_ids: set[int]) -> bool:
+    return value.isnumeric() and int(value) in account_ids
 
 
 # ── Modal: Add Account ─────────────────────────────────────────────
@@ -146,7 +151,6 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
             yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        """Show available parent accounts when the modal opens."""
         accounts = self.app.manager.accounts  # type: ignore[attr-defined]
         lines = ["Available accounts:"]
         for acct_id, acct in sorted(accounts.items()):
@@ -154,6 +158,21 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
                 continue
             lines.append(f"  {acct_id}: {acct.name}")
         self.query_one("#account-list", Static).update("\n".join(lines))
+        self.query_one("#acct-name", Input).focus()
+
+    # ── Real-time validation ────────────────────────
+
+    @on(Input.Changed, "#acct-parent")
+    def _validate_parent(self, event: Input.Changed) -> None:
+        value = event.value.strip()
+        input_w = event.input
+        if not value:
+            input_w.remove_class("valid", "invalid")
+            return
+        account_ids = set(self.app.manager.accounts.keys()) - {0}  # type: ignore[attr-defined]
+        _set_valid(input_w, value.isnumeric() and int(value) in account_ids)
+
+    # ── Actions ─────────────────────────────────────
 
     @on(Button.Pressed, "#submit")
     def submit(self) -> None:
@@ -183,7 +202,6 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
         yield Static("── Add Transaction ──", id="title")
         yield Static("", id="account-list")
 
-        # Date row: input + calendar button
         with Horizontal(id="date-row"):
             yield Input(
                 placeholder="MM-DD-YYYY H:M:S",
@@ -201,7 +219,6 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
             yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        """Show available accounts."""
         accounts = self.app.manager.accounts  # type: ignore[attr-defined]
         lines = ["Available accounts:"]
         for acct_id, acct in sorted(accounts.items()):
@@ -209,17 +226,62 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
                 continue
             lines.append(f"  {acct_id}: {acct.name}")
         self.query_one("#account-list", Static).update("\n".join(lines))
+        self.query_one("#txn-date", Input).focus()
+
+    # ── Real-time validation ────────────────────────
+
+    @on(Input.Changed, "#txn-date")
+    def _validate_date(self, event: Input.Changed) -> None:
+        value = event.value.strip()
+        input_w = event.input
+        if not value:
+            input_w.remove_class("valid", "invalid")
+            return
+        try:
+            datetime.strptime(value, DATE_STR)
+            _set_valid(input_w, True)
+        except ValueError:
+            _set_valid(input_w, False)
+
+    @on(Input.Changed, "#txn-debit")
+    def _validate_debit(self, event: Input.Changed) -> None:
+        value = event.value.strip()
+        input_w = event.input
+        if not value:
+            input_w.remove_class("valid", "invalid")
+            return
+        account_ids = set(self.app.manager.accounts.keys())  # type: ignore[attr-defined]
+        _set_valid(input_w, _valid_account_id(value, account_ids))
+
+    @on(Input.Changed, "#txn-credit")
+    def _validate_credit(self, event: Input.Changed) -> None:
+        value = event.value.strip()
+        input_w = event.input
+        if not value:
+            input_w.remove_class("valid", "invalid")
+            return
+        account_ids = set(self.app.manager.accounts.keys())  # type: ignore[attr-defined]
+        _set_valid(input_w, _valid_account_id(value, account_ids))
+
+    @on(Input.Changed, "#txn-amount")
+    def _validate_amount(self, event: Input.Changed) -> None:
+        value = event.value.strip()
+        input_w = event.input
+        if not value:
+            input_w.remove_class("valid", "invalid")
+            return
+        _set_valid(input_w, value.isnumeric() and int(value) > 0)
+
+    # ── Calendar ────────────────────────────────────
 
     @on(Button.Pressed, "#cal-btn")
     def _open_calendar(self) -> None:
-        """Open the calendar picker modal."""
-
         def _handle_date(selected: datetime | None) -> None:
             if selected is not None:
-                date_input = self.query_one("#txn-date", Input)
-                date_input.value = selected.strftime(DATE_STR)
-
+                self.query_one("#txn-date", Input).value = selected.strftime(DATE_STR)
         self.app.push_screen(DatePickerModal(), _handle_date)
+
+    # ── Submit / Cancel ─────────────────────────────
 
     @on(Button.Pressed, "#submit")
     def submit(self) -> None:
@@ -250,6 +312,15 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
 
 
 # ── Main App ───────────────────────────────────────────────────────
+
+
+STATUS_TEMPLATE = (
+    "[b]Assets:[/] ${a:>8}  "
+    "[b]Liabilities:[/] ${l:>8}  "
+    "[b]Net Worth:[/] ${nw:>8}  "
+    "[b]Equation:[/] {eq}"
+    "  [dim](filtered: {filter})[/]"
+)
 
 
 class LedgerApp(App[None]):
@@ -288,6 +359,22 @@ class LedgerApp(App[None]):
     #table-panel > Label {
         text-style: bold;
         padding: 0 0 1 0;
+    }
+
+    /* ── Status bar ──────────────────────────────── */
+    #status-bar {
+        height: 1;
+        background: $boost;
+        color: $text;
+        padding: 0 1;
+    }
+
+    /* ── Input validation ────────────────────────── */
+    Input.valid {
+        border: solid $success;
+    }
+    Input.invalid {
+        border: solid $error;
     }
 
     /* ── Calendar modal ──────────────────────────── */
@@ -347,7 +434,6 @@ class LedgerApp(App[None]):
         margin: 0 0 1 0;
     }
 
-    /* Transaction date row: input + calendar button */
     AddTransactionScreen #date-row {
         height: 3;
         margin: 0 0 1 0;
@@ -381,6 +467,7 @@ class LedgerApp(App[None]):
     BINDINGS = [
         Binding("a", "add_account", "Add Account"),
         Binding("t", "add_transaction", "Add Transaction"),
+        Binding("n", "net_worth", "Net Worth"),
         Binding("r", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -388,6 +475,8 @@ class LedgerApp(App[None]):
     def __init__(self, db_path: str = "data/journal.db") -> None:
         super().__init__()
         self.manager = AccountManager(db_path)
+        # When set, only show transactions related to this account (or descendants).
+        self.filter_account_id: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -398,6 +487,7 @@ class LedgerApp(App[None]):
             with Vertical(id="table-panel"):
                 yield Label("Journal")
                 yield DataTable(id="transaction-table")
+        yield Static("", id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -405,15 +495,12 @@ class LedgerApp(App[None]):
         self.manager.generate_ledger()
         self._populate_tree()
         self._populate_table()
+        self._refresh_status()
 
     # ── Tree ────────────────────────────────────────
 
     def _populate_tree(self) -> None:
-        """Rebuild the account tree widget from the current state.
-
-        Uses aggregated_balance so parent accounts show the sum
-        of all their children's balances.
-        """
+        """Rebuild the account tree widget using display-normal balances."""
         tree = self.query_one("#account-tree", Tree)
         tree.clear()
 
@@ -422,7 +509,7 @@ class LedgerApp(App[None]):
         def _add_children(parent_node, parent_id: int) -> None:
             for child_id in tree_data.get(parent_id, []):
                 account = self.manager.accounts[child_id]
-                balance_cents = self.manager.aggregated_balance(child_id)
+                balance_cents = self.manager.get_display_balance(child_id)
                 label = f"{account.name}  (${balance_cents/100:,.2f})"
                 node = parent_node.add(label, data={"account_id": child_id})
                 _add_children(node, child_id)
@@ -432,32 +519,58 @@ class LedgerApp(App[None]):
 
     @on(Tree.NodeSelected)
     def _on_tree_node_selected(self, event: Tree.NodeSelected[dict]) -> None:
-        """Show account details when a tree node is selected."""
+        """Filter the journal to show only the selected account's transactions."""
         account_id = event.node.data.get("account_id") if event.node.data else None
+
         if account_id is not None:
+            # Set the filter and show a notification with display balance
+            self.filter_account_id = account_id
             account = self.manager.accounts[account_id]
-            aggregated = self.manager.aggregated_balance(account_id)
-            personal = account.get_balance()
+            display_bal = self.manager.get_display_balance(account_id)
+            raw_bal = self.manager.aggregated_balance(account_id)
+            direction = "debit-normal" if self.manager.is_debit_normal(account_id) else "credit-normal"
+
             msg = (
                 f"[bold]{account.name}[/]\n"
-                f"Aggregate balance: ${aggregated/100:,.2f}\n"
-                f"Personal balance: ${personal/100:,.2f}\n"
+                f"Display balance: ${display_bal/100:,.2f}\n"
+                f"Raw balance: ${raw_bal/100:,.2f}\n"
+                f"Normal: {direction}\n"
             )
             if account.parent:
                 parent_name = self.manager.accounts[account.parent].name
                 msg += f"Parent: {parent_name}"
             self.notify(msg, title="Account Details", timeout=5)
+        else:
+            # Root node clicked — clear the filter
+            self.filter_account_id = None
+            self.notify("Showing all transactions")
+
+        self._populate_table()
+        self._refresh_status()
 
     # ── Transaction Table ───────────────────────────
 
     def _populate_table(self) -> None:
-        """Rebuild the transaction journal table."""
+        """Rebuild the transaction journal table, optionally filtered."""
         table = self.query_one("#transaction-table", DataTable)
         table.clear(columns=True)
         table.add_columns("Date", "Description", "Debit", "Credit", "Amount")
+        table.zebra_stripes = True
+        table.cursor_type = "row"
+
+        # Determine filter set
+        filter_ids: set[int] | None = None
+        if self.filter_account_id is not None:
+            filter_ids = self.manager.get_descendant_ids(self.filter_account_id)
 
         for txn_id in sorted(self.manager.journal.sorted_ids):
             txn = self.manager.journal.transactions[txn_id]
+
+            # Apply filter
+            if filter_ids is not None:
+                if txn.debit_acct not in filter_ids and txn.credit_acct not in filter_ids:
+                    continue
+
             table.add_row(
                 txn.date.strftime(DATE_STR),
                 txn.description,
@@ -467,9 +580,34 @@ class LedgerApp(App[None]):
             )
 
     def _acct_name(self, acct_id: int) -> str:
-        """Return the display name of an account."""
         acct = self.manager.accounts.get(acct_id)
         return acct.name if acct else f"?? ({acct_id})"
+
+    # ── Status Bar ──────────────────────────────────
+
+    def _refresh_status(self) -> None:
+        """Update the status bar with the accounting equation and net worth."""
+        eq = self.manager.check_accounting_equation()
+        nw = eq["net_worth"]
+        a = eq["assets"]
+        l = eq["liabilities"]
+
+        filter_text = "none"
+        if self.filter_account_id is not None:
+            name = self.manager.accounts[self.filter_account_id].name
+            filter_text = name
+
+        balanced_str = "✓ A = L + E" if eq["balanced"] else "✗ UNBALANCED"
+
+        self.query_one("#status-bar", Static).update(
+            STATUS_TEMPLATE.format(
+                a=a // 100,
+                l=l // 100,
+                nw=nw // 100,
+                eq=balanced_str,
+                filter=filter_text,
+            )
+        )
 
     # ── Actions ─────────────────────────────────────
 
@@ -484,6 +622,7 @@ class LedgerApp(App[None]):
             self.manager.add_account(name, parent)
             self.manager.generate_ledger()
             self._populate_tree()
+            self._refresh_status()
             self.notify(f"Account '{name}' created", severity="information")
         except ValueError as e:
             self.notify(str(e), severity="error")
@@ -491,9 +630,7 @@ class LedgerApp(App[None]):
     def action_add_transaction(self) -> None:
         self.push_screen(AddTransactionScreen(), self._handle_add_transaction)
 
-    def _handle_add_transaction(
-        self, result: tuple[datetime, str, int, int, int] | None
-    ) -> None:
+    def _handle_add_transaction(self, result: tuple[datetime, str, int, int, int] | None) -> None:
         if result is None:
             return
         date, desc, credit, debit, amount = result
@@ -502,6 +639,7 @@ class LedgerApp(App[None]):
             self.manager.generate_ledger()
             self._populate_tree()
             self._populate_table()
+            self._refresh_status()
             self.notify("Transaction added", severity="information")
         except ValueError as e:
             self.notify(str(e), severity="error")
@@ -510,7 +648,29 @@ class LedgerApp(App[None]):
         self.manager.generate_ledger()
         self._populate_tree()
         self._populate_table()
+        self._refresh_status()
         self.notify("Refreshed", severity="information")
+
+    def action_net_worth(self) -> None:
+        """Show a net worth snapshot."""
+        eq = self.manager.check_accounting_equation()
+        nw = eq["net_worth"]
+        a = eq["assets"]
+        l = eq["liabilities"]
+        e = eq["equity"]
+        ni = eq["net_income"]
+
+        self.notify(
+            f"[bold]Net Worth Snapshot[/]\n\n"
+            f"Assets:      ${a/100:>8,.2f}\n"
+            f"Liabilities: ${l/100:>8,.2f}\n"
+            f"───────────────\n"
+            f"[bold]Net Worth:  ${nw/100:>8,.2f}[/]\n\n"
+            f"Equity:      ${e/100:>8,.2f}\n"
+            f"Net Income:  ${ni/100:>8,.2f}",
+            title="Financial Snapshot",
+            timeout=10,
+        )
 
 
 def main() -> None:
