@@ -143,22 +143,60 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
 
     def compose(self) -> ComposeResult:
         yield Static("── Add Account ──", id="title")
-        yield Static("", id="account-list")
+        with Vertical(id="parent-selector"):
+            yield Static("Select parent account by clicking a node:", id="sel-hint")
+            yield Tree("root", id="parent-tree")
+        yield Static("", id="selected-parent")
         yield Input(placeholder="Account name", id="acct-name")
-        yield Input(placeholder="Parent account ID", id="acct-parent")
+        yield Input(placeholder="Or type parent ID", id="acct-parent")
         with Horizontal(id="buttons"):
             yield Button("Submit", variant="primary", id="submit")
             yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        accounts = self.app.manager.accounts  # type: ignore[attr-defined]
-        lines = ["Available accounts:"]
-        for acct_id, acct in sorted(accounts.items()):
-            if acct_id == 0:
-                continue
-            lines.append(f"  {acct_id}: {acct.name}")
-        self.query_one("#account-list", Static).update("\n".join(lines))
+        manager = self.app.manager  # type: ignore[attr-defined]
+        tree = self.query_one("#parent-tree", Tree)
+
+        tree_data = manager.build_tree()
+
+        def _add_children(parent_node, parent_id: int) -> None:
+            for child_id in tree_data.get(parent_id, []):
+                account = manager.accounts[child_id]
+                label = f"{account.name}  [dim](ID {child_id})[/]"
+                node = parent_node.add(label, data={"account_id": child_id})
+                _add_children(node, child_id)
+
+        _add_children(tree.root, 0)
+        tree.root.expand()
+
         self.query_one("#acct-name", Input).focus()
+
+    # ── Tree selection → Input ──────────────────────
+
+    @on(Tree.NodeSelected, "#parent-tree")
+    def _on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        account_id = event.node.data.get("account_id") if event.node.data else None
+        if account_id is None:
+            return
+
+        manager = self.app.manager  # type: ignore[attr-defined]
+        acct = manager.accounts[account_id]
+
+        # Fill the parent ID input
+        parent_input = self.query_one("#acct-parent", Input)
+        parent_input.value = str(account_id)
+
+        # Show confirmation
+        name = acct.name.capitalize() if account_id > 0 else "Root (top-level)"
+        self.query_one("#selected-parent", Static).update(
+            f"[bold]Selected:[/] {name} [dim](ID {account_id})[/]"
+        )
+
+        # Mark valid
+        if account_id == 0:
+            _set_valid(parent_input, False)
+        else:
+            _set_valid(parent_input, True)
 
     # ── Real-time validation ────────────────────────
 
@@ -424,7 +462,6 @@ class LedgerApp(App[None]):
         content-align: center middle;
     }
 
-    AddAccountScreen > #account-list,
     AddTransactionScreen > #account-list {
         min-height: 8;
         max-height: 12;
@@ -432,6 +469,22 @@ class LedgerApp(App[None]):
         border: solid $foreground 10%;
         padding: 0 1;
         margin: 0 0 1 0;
+    }
+
+    AddAccountScreen #parent-selector {
+        height: 14;
+        margin: 0 0 1 0;
+        border: solid $foreground 10%;
+    }
+
+    AddAccountScreen #parent-tree {
+        height: 1fr;
+    }
+
+    AddAccountScreen #selected-parent {
+        height: 1;
+        text-style: italic;
+        padding: 0 0 0 0;
     }
 
     AddTransactionScreen #date-row {
