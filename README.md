@@ -145,7 +145,7 @@ Each transaction is a double entry:
 - One credit account (money comes out)
 - Amount in **cents** (integer, no floating-point)
 
-Example: `add_transaction(date, "Groceries", credit=5, debit=1, amount=2000)` means $20.00 moved from `expenses → groceries` to `assets`.
+Example: `add_transaction(date, "Groceries", credit=1, debit=5, amount=2000)` means $20.00 moved from `assets` to `expenses → groceries`.
 
 ### Persistence
 
