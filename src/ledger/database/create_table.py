@@ -1,31 +1,28 @@
-import sqlite3
-foriegn = """
--- Enable foreign key support (specifically for SQLite)
-PRAGMA foreign_keys = ON;
-"""
-journal = """
+"""SQLite table definitions for the ledger system."""
+
+CREATE_ACCOUNTS = """
 CREATE TABLE IF NOT EXISTS accounts (
     account_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    parent_id INTEGER, -- Allowed to be NULL for top-level accounts
-    FOREIGN KEY (parent_id) REFERENCES accounts (account_id)
-);
-"""
-accounts = """
-CREATE TABLE IF NOT EXISTS journal (
-    journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL, -- Format: YYYY-MM-DD
-    description TEXT NOT NULL,
-    credit_account_id INTEGER NOT NULL,
-    debit_account_id INTEGER NOT NULL,
-    amount INTEGER NOT NULL, -- Stored in cents/smallest unit to avoid float errors
-    FOREIGN KEY (credit_account_id) REFERENCES accounts (account_id),
-    FOREIGN KEY (debit_account_id) REFERENCES accounts (account_id)
+    name TEXT NOT NULL UNIQUE,
+    parent_id INTEGER REFERENCES accounts(account_id)
 );
 """
 
-with sqlite3.connect('data/journal.db') as conn:
-    cur = conn.cursor()
-    cur.execute(foriegn)
-    cur.execute(journal)
-    cur.execute(accounts)
+CREATE_JOURNAL = """
+CREATE TABLE IF NOT EXISTS journal (
+    journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    description TEXT NOT NULL,
+    credit_account_id INTEGER NOT NULL REFERENCES accounts(account_id),
+    debit_account_id INTEGER NOT NULL REFERENCES accounts(account_id),
+    amount INTEGER NOT NULL
+);
+"""
+
+
+def ensure_tables(conn):
+    """Create tables if they don't exist. Must be called per-connection."""
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute(CREATE_ACCOUNTS)
+    conn.execute(CREATE_JOURNAL)
+    conn.commit()

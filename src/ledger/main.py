@@ -8,18 +8,15 @@ from ledger.controllers.accounts import AccountManager
 def main():
     manager = AccountManager()
 
-    # Top-level parents are auto-created (assets, liabilities, etc.)
-    # Add sub-accounts under them
-    checking = manager.add_account("Checking", 1)   # under assets
-    savings = manager.add_account("Savings", 1)     # under assets
-    groceries = manager.add_account("Groceries", 5) # under expenses
-    salary = manager.add_account("Salary", 4)       # under income
+    # Only seed demo data on first run (empty database)
+    if len(manager.accounts) <= 6:  # root + 5 parents, no children yet
+        checking = manager.add_account("Checking", 1)   # under assets
+        savings = manager.add_account("Savings", 1)     # under assets
+        groceries = manager.add_account("Groceries", 5) # under expenses
+        salary = manager.add_account("Salary", 4)       # under income
 
-    # Transfer money from Salary → Checking
-    manager.add_transaction(datetime.today(), "Payday", salary, checking, 200000)
-
-    # Spend from Checking → Groceries
-    manager.add_transaction(datetime.today(), "Weekly shop", groceries, checking, 4500)
+        manager.add_transaction(datetime.today(), "Payday", salary, checking, 200000)
+        manager.add_transaction(datetime.today(), "Weekly shop", groceries, checking, 4500)
 
     manager.generate_ledger()
     manager.print_tree()

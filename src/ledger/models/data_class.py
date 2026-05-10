@@ -31,11 +31,10 @@ class LedgerEntry:
     balance: int
 
     def __dict__(self):
-        output = {
+        return {
             'date': self.date.strftime(DATE_STR),
             'description': self.description,
-            'credit': self.credit_acct,
-            'debit': self.debit_acct,
-            'balance': self.amount
+            'credit': self.credit,
+            'debit': self.debit,
+            'balance': self.balance,
         }
-        return output
