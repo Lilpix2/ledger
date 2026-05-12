@@ -72,8 +72,8 @@ class AccountManager:
             acct_type = ACCT_TYPE_MAP.get(name, "ASSET")
             self.add_account(name, 0, acct_type)
         self.add_account('retained earnings', 3, ACCT_TYPE_MAP['equity'])
-        self.add_account('cash', 1, ACCT_TYPE_MAP['asset'])
-        self.add_account('accounts receivable', 1, ACCT_TYPE_MAP['asset'])
+        self.add_account('cash', 1, ACCT_TYPE_MAP['assets'])
+        self.add_account('accounts receivable', 1, ACCT_TYPE_MAP['assets'])
 
     # ── Accounts ────────────────────────────────────────────────────
 
