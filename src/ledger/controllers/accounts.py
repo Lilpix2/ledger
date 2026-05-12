@@ -279,3 +279,33 @@ class AccountManager:
         """Net worth in cents (display-normal)."""
         eq = self.check_accounting_equation()
         return eq["net_worth"]
+
+    def gen_income_report(self):
+        income_ids = self.get_descendant_ids(4) #4 is income base account
+        expense_ids = self.get_descendant_ids(5)#5 is expense base account
+        transactions = {'income':{},'expense':{}}
+        id = 0
+        credit = 0
+        debit = 0
+        for transaction in self.journal.transactions.values():
+            if transaction.credit_acct in income_ids:
+                transactions['income'][id] = transaction
+                credit += transaction.amount
+                id += 1
+        for transaction in self.journal.transactions.values():
+            if transaction.debit_acct in expense_ids:
+                transactions['expense'][id] = transaction
+                debit += transaction.amount
+                id += 1
+        print('----Income Report----')
+        print('----Income----')
+        for transaction in transactions["income"].values():
+            print(f"{transaction.description}: {transaction.amount/100:.2f}")
+        print(print('----Expenses----'))
+        for transaction in transactions["expense"].values():
+            print(f"{transaction.description}: {transaction.amount/100:.2f}")
+        print('----total----')
+        print(f'{(credit-debit)/100:.2f}')
+
+
+
