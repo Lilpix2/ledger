@@ -7,16 +7,16 @@ from ..constants import DATE_STR
 class JournalTransaction:
     date: datetime
     description: str
-    credit_acct: int
-    debit_acct: int
+    credit_accts: tuple[dict]
+    debit_accts: tuple[dict]
     amount: int
 
     def __dict__(self):
         output = {
             'date': self.date.strftime(DATE_STR),
             'description': self.description,
-            'credit_acct': self.credit_acct,
-            'debit_acct': self.debit_acct,
+            'credit_acct': self.credit_accts,
+            'debit_acct': self.debit_accts,
             'amount': self.amount
         }
         return output
