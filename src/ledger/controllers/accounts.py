@@ -280,32 +280,137 @@ class AccountManager:
         eq = self.check_accounting_equation()
         return eq["net_worth"]
 
-    def gen_income_report(self):
-        income_ids = self.get_descendant_ids(4) #4 is income base account
-        expense_ids = self.get_descendant_ids(5)#5 is expense base account
-        transactions = {'income':{},'expense':{}}
-        id = 0
-        credit = 0
-        debit = 0
-        for transaction in self.journal.transactions.values():
-            if transaction.credit_acct in income_ids:
-                transactions['income'][id] = transaction
-                credit += transaction.amount
-                id += 1
-        for transaction in self.journal.transactions.values():
-            if transaction.debit_acct in expense_ids:
-                transactions['expense'][id] = transaction
-                debit += transaction.amount
-                id += 1
-        print('----Income Report----')
-        print('----Income----')
-        for transaction in transactions["income"].values():
-            print(f"{transaction.description}: {transaction.amount/100:.2f}")
-        print(print('----Expenses----'))
-        for transaction in transactions["expense"].values():
-            print(f"{transaction.description}: {transaction.amount/100:.2f}")
-        print('----total----')
-        print(f'{(credit-debit)/100:.2f}')
+    def gen_income_report(
+        self,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ) -> dict:
+        """Generate a structured income statement for a date period.
+
+        Aggregates transactions by sub-account under income (ID 4) and
+        expenses (ID 5), filtered by an optional date range.
+
+        Parameters
+        ----------
+        start_date: datetime or None
+            Include transactions on or after this date.  None = unbounded.
+        end_date: datetime or None
+            Include transactions on or before this date.  None = unbounded.
+
+        Returns
+        -------
+        dict
+            period (start, end),
+            income (list of (account_name, total_cents)),
+            income_total (int),
+            expenses (list of (account_name, total_cents)),
+            expenses_total (int),
+            net_income (int, positive = profit, negative = loss)
+        """
+        income_ids = self.get_descendant_ids(4)
+        expense_ids = self.get_descendant_ids(5)
+
+        income_by_acct: dict[int, int] = {}
+        expense_by_acct: dict[int, int] = {}
+
+        for txn in self.journal.transactions.values():
+            # Date range filter
+            if start_date and txn.date < start_date:
+                continue
+            if end_date and txn.date > end_date:
+                continue
+
+            if txn.credit_acct in income_ids:
+                aid = txn.credit_acct
+                income_by_acct[aid] = income_by_acct.get(aid, 0) + txn.amount
+
+            if txn.debit_acct in expense_ids:
+                aid = txn.debit_acct
+                expense_by_acct[aid] = expense_by_acct.get(aid, 0) + txn.amount
+
+        # Build sorted account-level lists
+        def _to_sorted(d: dict[int, int]) -> list[tuple[str, int]]:
+            return sorted(
+                [(self.accounts[aid].name, total) for aid, total in d.items()],
+                key=lambda x: x[0],
+            )
+
+        income_list = _to_sorted(income_by_acct)
+        expense_list = _to_sorted(expense_by_acct)
+
+        income_total = sum(t for _, t in income_list)
+        expense_total = sum(t for _, t in expense_list)
+
+        return {
+            "period": (start_date, end_date),
+            "income": income_list,
+            "income_total": income_total,
+            "expenses": expense_list,
+            "expenses_total": expense_total,
+            "net_income": income_total - expense_total,
+        }
+
+    def print_income_report(
+        self,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ) -> None:
+        """Print a formatted income statement to stdout."""
+        report = self.gen_income_report(start_date, end_date)
+
+        # Period label
+        p_start, p_end = report["period"]
+        if p_start or p_end:
+            label_parts = []
+            if p_start:
+                label_parts.append(p_start.strftime(DATE_STR))
+            else:
+                label_parts.append("earliest")
+            label_parts.append("to")
+            if p_end:
+                label_parts.append(p_end.strftime(DATE_STR))
+            else:
+                label_parts.append("now")
+            period_str = " ".join(label_parts)
+        else:
+            period_str = "All Time"
+
+        B = "═" * 46
+        D = "─" * 46
+        S = "─" * 38
+
+        print()
+        print(f"  {B}")
+        print("  │           INCOME STATEMENT           │")
+        print(f"  │  {period_str:42s}│")
+        print(f"  {B}")
+
+        # Income
+        print()
+        print("  │ INCOME")
+        print(f"  │ {D}")
+        for name, total in report["income"]:
+            print(f"  │   {name:32s}  ${total/100:>8,.2f}")
+        print(f"  │ {S}")
+        print(f"  │   {'Total Income':32s}  ${report['income_total']/100:>8,.2f}")
+
+        # Expenses
+        print()
+        print("  │ EXPENSES")
+        print(f"  │ {D}")
+        for name, total in report["expenses"]:
+            print(f"  │   {name:32s}  ${total/100:>8,.2f}")
+        print(f"  │ {S}")
+        print(f"  │   {'Total Expenses':32s}  ${report['expenses_total']/100:>8,.2f}")
+
+        # Bottom line
+        net = report["net_income"]
+        label = "Net Income" if net >= 0 else "Net Loss"
+        print()
+        print(f"  │ {D}")
+        print(f"  │   {label:32s}  ${abs(net)/100:>8,.2f}")
+        print(f"  {B}")
+
 
 
 
