@@ -19,6 +19,7 @@ DEFAULT_DB_PATH = "data/journal.db"
 DEBIT_NORMAL_TYPES = frozenset({"ASSET", "EXPENSE"})
 
 
+
 class Account:
     def __init__(self, name: str, parent: int | None = None, acct_type: str = "ASSET"):
         self.name = name
@@ -70,6 +71,7 @@ class AccountManager:
         for name in PARENTS:
             acct_type = ACCT_TYPE_MAP.get(name, "ASSET")
             self.add_account(name, 0, acct_type)
+        self.add_account('retained earnings', 3, 'equity')
 
     # ── Accounts ────────────────────────────────────────────────────
 
@@ -410,7 +412,26 @@ class AccountManager:
         print(f"  │ {D}")
         print(f"  │   {label:32s}  ${abs(net)/100:>8,.2f}")
         print(f"  {B}")
+    #----Accounting stuff
+    def close_temps(self):
+        expense_ids = self.get_descendant_ids(5)
+        income_ids = self.get_descendant_ids(4)
+        for id in expense_ids:
+            self.add_transaction(
+                datetime.today(),
+                f'closing {self.accounts[id].name}',
+                id,
+                6,
+                self.accounts[id].get_balance()
 
+            )
+        for id in income_ids:
+            self.add_transaction(
+                datetime.today(),
+                f'closing {self.accounts[id].name}',
+                6,
+                id,
+                self.accounts[id].get_balance()
 
-
+            )
 
