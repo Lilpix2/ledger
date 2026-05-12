@@ -40,6 +40,7 @@ def main():
     manager.generate_ledger()
     manager.print_tree()
     manager.print_income_report()
+    manager.print_account_summary()
 
 
 main()

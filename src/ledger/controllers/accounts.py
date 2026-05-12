@@ -446,3 +446,93 @@ class AccountManager:
                 Split(aid, -bal),   # debit income (to zero it; -negative = positive)
                 Split(6, bal),      # credit retained earnings (bal is negative = credit)
             ])
+
+    # ── Account Summary ────────────────────────────────────────────
+
+    def gen_account_summary(self) -> dict:
+        """Build a structured account summary grouped by type.
+
+        Returns
+        -------
+        dict
+            ``groups`` (list of dicts with keys: type_label, accounts,
+                        total_cents),
+            ``net_worth`` (int in cents),
+            ``balanced`` (bool)
+        """
+        TYPES_IN_ORDER = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"]
+        TYPE_LABELS = {
+            "ASSET": "Assets",
+            "LIABILITY": "Liabilities",
+            "EQUITY": "Equity",
+            "INCOME": "Income",
+            "EXPENSE": "Expenses",
+        }
+
+        # Collect accounts by type (skip root, skip parent categories that
+        # have no balance of their own — they'll be shown via children)
+        by_type: dict[str, list[tuple[int, str, int]]] = {t: [] for t in TYPES_IN_ORDER}
+
+        for aid, acct in self.accounts.items():
+            if aid == 0:
+                continue
+            t = acct.acct_type
+            # Use raw balance, display-normalized (positive for everything)
+            raw = acct.get_balance()
+            if acct.acct_type in DEBIT_NORMAL_TYPES:
+                bal = raw               # debit-normal: already positive
+            else:
+                bal = -raw              # credit-normal: flip sign
+            by_type[t].append((aid, acct.name, bal))
+
+        # Sort each group by name, build output
+        groups = []
+        for t in TYPES_IN_ORDER:
+            entries = sorted(by_type[t], key=lambda x: x[1])
+            total = sum(e[2] for e in entries)
+            groups.append({
+                "type_label": TYPE_LABELS.get(t, t),
+                "accounts": entries,
+                "total_cents": total,
+            })
+
+        eq = self.check_accounting_equation()
+
+        return {
+            "groups": groups,
+            "net_worth": eq["net_worth"],
+            "balanced": eq["balanced"],
+        }
+
+    def print_account_summary(self) -> None:
+        """Print a formatted account summary to stdout."""
+        report = self.gen_account_summary()
+
+        B = "═" * 46
+        D = "─" * 46
+        S = "─" * 38
+
+        print()
+        print(f"  {B}")
+        print("  │             ACCOUNT SUMMARY             │")
+        print(f"  {B}")
+
+        for group in report["groups"]:
+            if not group["accounts"]:
+                continue
+            label = group["type_label"]
+            print()
+            print(f"  │ {label}")
+            print(f"  │ {D}")
+            for aid, name, bal in group["accounts"]:
+                print(f"  │   {aid:3d}  {name:28s}  ${bal/100:>8,.2f}")
+            print(f"  │ {S}")
+            print(f"  │   {'Total ' + label:32s}  ${group['total_cents']/100:>8,.2f}")
+
+        # Bottom line
+        print()
+        print(f"  │ {D}")
+        print(f"  │   {'Net Worth':32s}  ${report['net_worth']/100:>8,.2f}")
+        eq_status = "\u2713" if report["balanced"] else "\u2717 UNBALANCED"
+        print(f"  │   {'Equation':32s}  {eq_status}")
+        print(f"  {B}")

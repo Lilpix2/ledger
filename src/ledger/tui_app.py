@@ -624,6 +624,7 @@ class LedgerApp(App[None]):
     BINDINGS = [
         Binding("a", "add_account", "Add Account"),
         Binding("t", "add_transaction", "Add Transaction"),
+        Binding("s", "account_summary", "Summary"),
         Binding("n", "net_worth", "Net Worth"),
         Binding("r", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
@@ -838,6 +839,25 @@ class LedgerApp(App[None]):
             title="Financial Snapshot",
             timeout=10,
         )
+
+    def action_account_summary(self) -> None:
+        report = self.manager.gen_account_summary()
+        lines = []
+        for group in report["groups"]:
+            if not group["accounts"]:
+                continue
+            lines.append(f"[bold]{group['type_label']}[/]")
+            for aid, name, bal in group["accounts"]:
+                if bal != 0:
+                    lines.append(f"  {aid:3d}  {name:20s}  ${bal/100:>8,.2f}")
+            total = group["total_cents"]
+            lines.append(f"  [dim]{'-' * 32}[/]")
+            lines.append(f"  Total {group['type_label']:<15s}  ${total/100:>8,.2f}")
+            lines.append("")
+        lines.append(f"[bold]Net Worth:  ${report['net_worth']/100:>8,.2f}[/]")
+        status = "✓ Balanced" if report["balanced"] else "✗ UNBALANCED"
+        lines.append(f"Equation:    {status}")
+        self.notify("\n".join(lines), title="Account Summary", timeout=15)
 
 
 def main() -> None:
