@@ -71,7 +71,7 @@ class AccountManager:
         for name in PARENTS:
             acct_type = ACCT_TYPE_MAP.get(name, "ASSET")
             self.add_account(name, 0, acct_type)
-        self.add_account('retained earnings', 3, 'equity')
+        self.add_account('retained earnings', 3, ACCT_TYPE_MAP['equity'])
 
     # ── Accounts ────────────────────────────────────────────────────
 
@@ -414,24 +414,34 @@ class AccountManager:
         print(f"  {B}")
     #----Accounting stuff
     def close_temps(self):
+        """Close temporary accounts (income & expenses) to Retained Earnings.
+
+        Creates closing entries that zero out all income and expense accounts,
+        transferring their net balance to Retained Earnings (ID 6).
+        Call ``generate_ledger()`` afterwards to recalculate ledger balances.
+        """
         expense_ids = self.get_descendant_ids(5)
         income_ids = self.get_descendant_ids(4)
-        for id in expense_ids:
+        for aid in expense_ids:
+            bal = self.accounts[aid].get_balance()
+            if bal == 0:
+                continue
             self.add_transaction(
                 datetime.today(),
-                f'closing {self.accounts[id].name}',
-                id,
+                f'closing {self.accounts[aid].name}',
+                aid,
                 6,
-                self.accounts[id].get_balance()
-
+                bal,
             )
-        for id in income_ids:
+        for aid in income_ids:
+            bal = self.accounts[aid].get_balance()
+            if bal == 0:
+                continue
             self.add_transaction(
                 datetime.today(),
-                f'closing {self.accounts[id].name}',
+                f'closing {self.accounts[aid].name}',
                 6,
-                id,
-                abs(self.accounts[id].get_balance())
-
+                aid,
+                abs(bal),
             )
 
