@@ -431,7 +431,7 @@ class AccountManager:
                 f'closing {self.accounts[id].name}',
                 6,
                 id,
-                self.accounts[id].get_balance()
+                abs(self.accounts[id].get_balance())
 
             )
 
