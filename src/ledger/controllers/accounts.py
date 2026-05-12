@@ -9,7 +9,7 @@ from datetime import datetime
 from ..constants import PARENTS, ACCT_TYPE_MAP, DATE_STR
 from ..database.database_controller import DatabaseController
 from ..models.data_books import Ledger, Journal
-from ..models.data_class import JournalTransaction
+from ..models.data_class import JournalTransaction, Split
 
 DEFAULT_DB_PATH = "data/journal.db"
 
@@ -17,7 +17,6 @@ DEFAULT_DB_PATH = "data/journal.db"
 # Debit-normal: ASSET, EXPENSE  (debits increase the balance)
 # Credit-normal: LIABILITY, EQUITY, INCOME  (credits increase the balance)
 DEBIT_NORMAL_TYPES = frozenset({"ASSET", "EXPENSE"})
-
 
 
 class Account:
@@ -59,9 +58,7 @@ class AccountManager:
                 parent = parent_id if parent_id is not None else 0
                 self.accounts[acct_id] = Account(name, parent, acct_type)
 
-            for _, date_str, desc, credit_id, debit_id, amount in self.db.load_transactions():
-                date = datetime.strptime(date_str, DATE_STR)
-                txn = JournalTransaction(date, desc, credit_id, debit_id, amount)
+            for txn in self.db.load_transactions():
                 self.journal.add_transaction(txn)
 
         self.account_num = max(self.accounts.keys()) + 1
@@ -94,55 +91,77 @@ class AccountManager:
         self.accounts[acct_id] = Account(name, parent, acct_type)
         return acct_id
 
-    # ── Transactions ────────────────────────────────────────────────
+    # ── Transactions (compound) ─────────────────────────────────────
 
     def add_transaction(
         self,
         date: datetime,
         description: str,
-        credit_acct: int,
-        debit_acct: int,
-        amount: int,
+        splits: list[Split],
     ) -> int:
-        # --- Pre-commit validation (double-entry integrity) ---
-        if amount <= 0:
-            raise ValueError("Transaction amount must be positive")
-        if credit_acct not in self.accounts:
-            raise ValueError(f"No account with ID {credit_acct}")
-        if debit_acct not in self.accounts:
-            raise ValueError(f"No account with ID {debit_acct}")
-        if credit_acct == debit_acct:
-            raise ValueError("Credit and debit accounts must be different")
+        """Add a compound journal entry with N splits.
 
-        # Persist to database
+        Parameters
+        ----------
+        date : datetime
+        description : str
+        splits : list of Split
+            Each split: ``Split(account_id, amount, memo="")``.
+            ``amount > 0`` = debit, ``amount < 0`` = credit.
+            Sum of all amounts must equal 0.
+
+        Returns
+        -------
+        int
+            Transaction ID in the journal.
+        """
+        # ── Validation ──
+        total = sum(s.amount for s in splits)
+        if total != 0:
+            raise ValueError(
+                f"Unbalanced entry: sum of splits = {total} (must be 0)"
+            )
+        if not splits:
+            raise ValueError("Entry must have at least one split")
+        for s in splits:
+            if s.account_id not in self.accounts:
+                raise ValueError(f"No account with ID {s.account_id}")
+            if s.amount == 0:
+                raise ValueError("Split amount must be non-zero")
+
+        # ── Persist ──
         date_str = date.strftime(DATE_STR)
-        self.db.save_transaction(date_str, description, credit_acct, debit_acct, amount)
+        self.db.save_transaction(date_str, description, splits)
 
-        # Add to in-memory journal
-        txn = JournalTransaction(date, description, credit_acct, debit_acct, amount)
+        # ── In-memory ──
+        txn = JournalTransaction(date, description, splits)
         return self.journal.add_transaction(txn)
 
     # ── Ledger Generation ──────────────────────────────────────────
 
     def generate_ledger(self):
+        """Recompute all account balances from the journal.
+
+        Clears every account's ledger, then replays every transaction's
+        splits in chronological order.
+        """
         for acct in self.accounts.values():
             acct.ledger.clear_entries()
+
         for txn in self.journal.chronological():
-            self.accounts[txn.debit_acct].ledger.add_entry(
-                txn.date,
-                txn.description,
-                0,
-                txn.amount,
-            )
-            self.accounts[txn.credit_acct].ledger.add_entry(
-                txn.date,
-                txn.description,
-                txn.amount,
-                0,
-            )
-        total = 0
-        for account in self.accounts.values():
-            total += account.get_balance()
+            for s in txn.splits:
+                if s.amount > 0:
+                    # Debit leg
+                    self.accounts[s.account_id].ledger.add_entry(
+                        txn.date, txn.description, 0, s.amount,
+                    )
+                else:
+                    # Credit leg (s.amount is negative)
+                    self.accounts[s.account_id].ledger.add_entry(
+                        txn.date, txn.description, -s.amount, 0,
+                    )
+
+        total = sum(a.get_balance() for a in self.accounts.values())
         if total != 0:
             raise Exception(f"Trial Balance is {total}. Book is unbalanced")
 
@@ -296,20 +315,12 @@ class AccountManager:
 
         Parameters
         ----------
-        start_date: datetime or None
-            Include transactions on or after this date.  None = unbounded.
-        end_date: datetime or None
-            Include transactions on or before this date.  None = unbounded.
+        start_date, end_date: datetime or None
 
         Returns
         -------
-        dict
-            period (start, end),
-            income (list of (account_name, total_cents)),
-            income_total (int),
-            expenses (list of (account_name, total_cents)),
-            expenses_total (int),
-            net_income (int, positive = profit, negative = loss)
+        dict with keys: period, income, income_total, expenses,
+                        expenses_total, net_income
         """
         income_ids = self.get_descendant_ids(4)
         expense_ids = self.get_descendant_ids(5)
@@ -318,21 +329,21 @@ class AccountManager:
         expense_by_acct: dict[int, int] = {}
 
         for txn in self.journal.transactions.values():
-            # Date range filter
             if start_date and txn.date < start_date:
                 continue
             if end_date and txn.date > end_date:
                 continue
 
-            if txn.credit_acct in income_ids:
-                aid = txn.credit_acct
-                income_by_acct[aid] = income_by_acct.get(aid, 0) + txn.amount
+            for s in txn.splits:
+                # Credit legs (negative splits) on income accounts
+                if s.amount < 0 and s.account_id in income_ids:
+                    aid = s.account_id
+                    income_by_acct[aid] = income_by_acct.get(aid, 0) + (-s.amount)
+                # Debit legs (positive splits) on expense accounts
+                if s.amount > 0 and s.account_id in expense_ids:
+                    aid = s.account_id
+                    expense_by_acct[aid] = expense_by_acct.get(aid, 0) + s.amount
 
-            if txn.debit_acct in expense_ids:
-                aid = txn.debit_acct
-                expense_by_acct[aid] = expense_by_acct.get(aid, 0) + txn.amount
-
-        # Build sorted account-level lists
         def _to_sorted(d: dict[int, int]) -> list[tuple[str, int]]:
             return sorted(
                 [(self.accounts[aid].name, total) for aid, total in d.items()],
@@ -362,19 +373,12 @@ class AccountManager:
         """Print a formatted income statement to stdout."""
         report = self.gen_income_report(start_date, end_date)
 
-        # Period label
         p_start, p_end = report["period"]
         if p_start or p_end:
             label_parts = []
-            if p_start:
-                label_parts.append(p_start.strftime(DATE_STR))
-            else:
-                label_parts.append("earliest")
+            label_parts.append(p_start.strftime(DATE_STR) if p_start else "earliest")
             label_parts.append("to")
-            if p_end:
-                label_parts.append(p_end.strftime(DATE_STR))
-            else:
-                label_parts.append("now")
+            label_parts.append(p_end.strftime(DATE_STR) if p_end else "now")
             period_str = " ".join(label_parts)
         else:
             period_str = "All Time"
@@ -388,8 +392,6 @@ class AccountManager:
         print("  │           INCOME STATEMENT           │")
         print(f"  │  {period_str:42s}│")
         print(f"  {B}")
-
-        # Income
         print()
         print("  │ INCOME")
         print(f"  │ {D}")
@@ -397,8 +399,6 @@ class AccountManager:
             print(f"  │   {name:32s}  ${total/100:>8,.2f}")
         print(f"  │ {S}")
         print(f"  │   {'Total Income':32s}  ${report['income_total']/100:>8,.2f}")
-
-        # Expenses
         print()
         print("  │ EXPENSES")
         print(f"  │ {D}")
@@ -406,44 +406,43 @@ class AccountManager:
             print(f"  │   {name:32s}  ${total/100:>8,.2f}")
         print(f"  │ {S}")
         print(f"  │   {'Total Expenses':32s}  ${report['expenses_total']/100:>8,.2f}")
-
-        # Bottom line
         net = report["net_income"]
         label = "Net Income" if net >= 0 else "Net Loss"
         print()
         print(f"  │ {D}")
         print(f"  │   {label:32s}  ${abs(net)/100:>8,.2f}")
         print(f"  {B}")
-    #----Accounting stuff
+
+    # ── Closing Entries ─────────────────────────────────────────────
+
     def close_temps(self):
         """Close temporary accounts (income & expenses) to Retained Earnings.
 
-        Creates closing entries that zero out all income and expense accounts,
-        transferring their net balance to Retained Earnings (ID 6).
-        Call ``generate_ledger()`` afterwards to recalculate ledger balances.
+        Creates one compound closing entry that zeroes all income and
+        expense accounts, transferring their net balance to Retained
+        Earnings (ID 6).  Call ``generate_ledger()`` afterwards.
         """
         expense_ids = self.get_descendant_ids(5)
         income_ids = self.get_descendant_ids(4)
+        today = datetime.today()
+
+        # Close each expense account (credit expense, debit RE)
         for aid in expense_ids:
             bal = self.accounts[aid].get_balance()
             if bal == 0:
                 continue
-            self.add_transaction(
-                datetime.today(),
-                f'closing {self.accounts[aid].name}',
-                aid,
-                6,
-                bal,
-            )
+            self.add_transaction(today, f'closing {self.accounts[aid].name}', [
+                Split(aid, -bal),   # credit expense (to zero it)
+                Split(6, bal),      # debit retained earnings
+            ])
+
+        # Close each income account (debit income, credit RE)
         for aid in income_ids:
             bal = self.accounts[aid].get_balance()
             if bal == 0:
                 continue
-            self.add_transaction(
-                datetime.today(),
-                f'closing {self.accounts[aid].name}',
-                6,
-                aid,
-                abs(bal),
-            )
-
+            # bal is negative (credit-normal); flip sign for debits/credits
+            self.add_transaction(today, f'closing {self.accounts[aid].name}', [
+                Split(aid, -bal),   # debit income (to zero it; -negative = positive)
+                Split(6, bal),      # credit retained earnings (bal is negative = credit)
+            ])

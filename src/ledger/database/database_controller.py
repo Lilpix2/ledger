@@ -2,7 +2,10 @@
 
 import os
 import sqlite3
+from datetime import datetime
 
+from ..constants import DATE_STR
+from ..models.data_class import JournalTransaction, Split
 from .create_table import ensure_tables
 
 
@@ -13,7 +16,6 @@ class DatabaseController:
         self.db_path = db_path
 
     def _connect(self) -> sqlite3.Connection:
-        # Ensure the parent directory exists
         db_dir = os.path.dirname(self.db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
@@ -23,51 +25,53 @@ class DatabaseController:
         return conn
 
     def ensure_tables(self):
-        """Create tables if they don't exist (and migrate existing ones)."""
         with self._connect() as conn:
             ensure_tables(conn)
-            # Migration: add acct_type column for existing databases
-            try:
-                conn.execute(
-                    "ALTER TABLE accounts ADD COLUMN acct_type TEXT NOT NULL DEFAULT 'ASSET'"
-                )
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass  # Column already exists
 
     def load_accounts(self) -> list[tuple[int, str, int | None, str]]:
-        """Return list of (account_id, name, parent_id, acct_type) for all accounts."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT account_id, name, parent_id, acct_type FROM accounts ORDER BY account_id"
+                "SELECT account_id, name, parent_id, acct_type "
+                "FROM accounts ORDER BY account_id"
             ).fetchall()
             return [
                 (r["account_id"], r["name"], r["parent_id"], r["acct_type"])
                 for r in rows
             ]
 
-    def load_transactions(self) -> list[tuple[int, str, str, int, int, int]]:
-        """Return list of (journal_id, date, description, credit_id, debit_id, amount)."""
+    def load_transactions(self) -> list[JournalTransaction]:
+        """Load all journal entries with their splits from the database."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT journal_id, date, description, credit_account_id, debit_account_id, amount FROM journal ORDER BY journal_id"
-            ).fetchall()
-            return [
-                (
-                    r["journal_id"],
-                    r["date"],
-                    r["description"],
-                    r["credit_account_id"],
-                    r["debit_account_id"],
-                    r["amount"],
-                )
-                for r in rows
-            ]
+            rows = conn.execute("""
+                SELECT j.journal_id, j.date, j.description,
+                       s.account_id, s.amount, s.memo
+                FROM journal j
+                JOIN split s ON s.journal_id = j.journal_id
+                ORDER BY j.journal_id, s.split_id
+            """).fetchall()
+
+        # Group rows by journal_id
+        journals: dict[int, dict] = {}
+        for r in rows:
+            jid = r["journal_id"]
+            if jid not in journals:
+                journals[jid] = {
+                    "date": datetime.strptime(r["date"], DATE_STR),
+                    "description": r["description"],
+                    "splits": [],
+                }
+            journals[jid]["splits"].append(
+                Split(r["account_id"], r["amount"], r["memo"] or "")
+            )
+
+        return [
+            JournalTransaction(v["date"], v["description"], v["splits"])
+            for v in journals.values()
+        ]
 
     def save_account(
         self, name: str, parent_id: int | None = None, acct_type: str = "ASSET"
     ) -> int:
-        """Insert a new account and return its account_id."""
         with self._connect() as conn:
             cur = conn.execute(
                 "INSERT INTO accounts (name, parent_id, acct_type) VALUES (?, ?, ?)",
@@ -76,17 +80,19 @@ class DatabaseController:
             return cur.lastrowid
 
     def save_transaction(
-        self,
-        date: str,
-        description: str,
-        credit_id: int,
-        debit_id: int,
-        amount: int,
+        self, date: str, description: str, splits: list[Split]
     ) -> int:
-        """Insert a new journal entry and return its journal_id."""
+        """Insert a journal entry with its splits. Returns journal_id."""
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO journal (date, description, credit_account_id, debit_account_id, amount) VALUES (?, ?, ?, ?, ?)",
-                (date, description, credit_id, debit_id, amount),
+                "INSERT INTO journal (date, description) VALUES (?, ?)",
+                (date, description),
             )
-            return cur.lastrowid
+            jid = cur.lastrowid
+            for s in splits:
+                conn.execute(
+                    "INSERT INTO split (journal_id, account_id, amount, memo) "
+                    "VALUES (?, ?, ?, ?)",
+                    (jid, s.account_id, s.amount, s.memo),
+                )
+            return jid

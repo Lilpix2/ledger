@@ -23,6 +23,7 @@ from textual.widgets import (
 
 from .constants import DATE_STR
 from .controllers.accounts import AccountManager
+from .models.data_class import Split
 
 
 # ── Calendar / Date Picker ─────────────────────────────────────────
@@ -233,8 +234,12 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
 # ── Modal: Add Transaction ─────────────────────────────────────────
 
 
-class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | None]):
-    """Modal for creating a new journal transaction."""
+class AddTransactionScreen(ModalScreen[tuple[datetime, str, list] | None]):
+    """Modal for creating a compound journal entry with N splits."""
+
+    def __init__(self):
+        super().__init__()
+        self.split_count = 0
 
     def compose(self) -> ComposeResult:
         yield Static("── Add Transaction ──", id="title")
@@ -247,30 +252,69 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
                 id="txn-date",
                 value=datetime.now().strftime(DATE_STR),
             )
-            yield Button("📅", id="cal-btn", variant="default")
+            yield Button("\U0001f4c5", id="cal-btn", variant="default")
 
         yield Input(placeholder="Description", id="txn-desc")
-        yield Input(placeholder="Debit account ID", id="txn-debit")
-        yield Input(placeholder="Credit account ID", id="txn-credit")
-        yield Input(placeholder="Amount (in cents)", id="txn-amount")
+
+        with Horizontal(classes="split-header"):
+            yield Label("Splits:", classes="section-label")
+            yield Button("+ Add Split", id="add-split-btn")
+
+        with VerticalScroll(id="split-rows"):
+            yield from self._build_split_row(0)
+
+        self.split_count = 1
+
         with Horizontal(id="buttons"):
             yield Button("Submit", variant="primary", id="submit")
             yield Button("Cancel", id="cancel")
 
-    def on_mount(self) -> None:
+    def _build_split_row(self, idx, acct="", amt="", is_debit=True):
+        """Yield the widgets for one split row."""
+        with Horizontal(classes="split-row", id=f"split-{idx}"):
+            yield Input(
+                placeholder="Acct#", value=acct,
+                id=f"split-acct-{idx}", classes="split-acct",
+            )
+            yield Input(
+                placeholder="Amount (cents)", value=amt,
+                id=f"split-amt-{idx}", classes="split-amt",
+            )
+            yield Button(
+                "D" if is_debit else "C",
+                id=f"split-dir-{idx}",
+                classes="split-dir",
+                variant="primary" if is_debit else "default",
+            )
+            if idx > 0:
+                yield Button("\u2716", id=f"split-rmv-{idx}", classes="split-rmv")
+
+    def _add_split_row(self):
+        idx = self.split_count
+        container = self.query_one("#split-rows", VerticalScroll)
+        for widget in self._build_split_row(idx):
+            container.mount(widget)
+        self.split_count += 1
+        self._scroll_bottom()
+
+    def _scroll_bottom(self):
+        try:
+            self.query_one("#split-rows", VerticalScroll).scroll_end(animate=False)
+        except Exception:
+            pass
+
+    def on_mount(self):
         self._populate_table()
         self.query_one("#txn-date", Input).focus()
 
-    def _populate_table(self, query: str = "") -> None:
-        """Rebuild the account DataTable, optionally filtered by name."""
+    def _populate_table(self, query=""):
         table = self.query_one("#acct-table", DataTable)
         table.clear()
         table.add_columns("ID", "Name", "Type")
         table.zebra_stripes = True
         table.cursor_type = "row"
-
         q = query.strip().lower()
-        accounts = self.app.manager.accounts  # type: ignore[attr-defined]
+        accounts = self.app.manager.accounts
         for acct_id, acct in sorted(accounts.items()):
             if acct_id == 0:
                 continue
@@ -278,104 +322,135 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, int, int, int] | Non
                 continue
             table.add_row(str(acct_id), acct.name, acct.acct_type, key=str(acct_id))
 
-    # ── Real-time validation ────────────────────────
+    # ── Split management ─────────────────────────────────────
+
+    @on(Button.Pressed, "#add-split-btn")
+    def _handle_add_split(self):
+        self._add_split_row()
+
+    # ── Real-time validation ─────────────────────────────────
 
     @on(Input.Changed, "#txn-date")
-    def _validate_date(self, event: Input.Changed) -> None:
+    def _validate_date(self, event):
         value = event.value.strip()
-        input_w = event.input
+        w = event.input
         if not value:
-            input_w.remove_class("valid", "invalid")
+            w.remove_class("valid", "invalid")
             return
         try:
             datetime.strptime(value, DATE_STR)
-            _set_valid(input_w, True)
+            _set_valid(w, True)
         except ValueError:
-            _set_valid(input_w, False)
+            _set_valid(w, False)
 
-    @on(Input.Changed, "#txn-debit")
-    def _validate_debit(self, event: Input.Changed) -> None:
+    @on(Input.Changed, ".split-acct")
+    def _validate_split_acct(self, event):
         value = event.value.strip()
-        input_w = event.input
+        w = event.input
         if not value:
-            input_w.remove_class("valid", "invalid")
+            w.remove_class("valid", "invalid")
             return
-        account_ids = set(self.app.manager.accounts.keys())  # type: ignore[attr-defined]
-        _set_valid(input_w, _valid_account_id(value, account_ids))
+        account_ids = set(self.app.manager.accounts.keys())
+        _set_valid(w, _valid_account_id(value, account_ids))
 
-    @on(Input.Changed, "#txn-credit")
-    def _validate_credit(self, event: Input.Changed) -> None:
+    @on(Input.Changed, ".split-amt")
+    def _validate_split_amt(self, event):
         value = event.value.strip()
-        input_w = event.input
+        w = event.input
         if not value:
-            input_w.remove_class("valid", "invalid")
+            w.remove_class("valid", "invalid")
             return
-        account_ids = set(self.app.manager.accounts.keys())  # type: ignore[attr-defined]
-        _set_valid(input_w, _valid_account_id(value, account_ids))
+        _set_valid(w, value.lstrip("-").isnumeric() and int(value) != 0)
 
-    @on(Input.Changed, "#txn-amount")
-    def _validate_amount(self, event: Input.Changed) -> None:
-        value = event.value.strip()
-        input_w = event.input
-        if not value:
-            input_w.remove_class("valid", "invalid")
-            return
-        _set_valid(input_w, value.isnumeric() and int(value) > 0)
+    # ── Direction toggle ────────────────────────────────────
 
-    # ── Filter / Row selection ──────────────────────
+    @on(Button.Pressed, ".split-dir")
+    def _toggle_split_dir(self, event):
+        btn = event.button
+        if btn.label == "D":
+            btn.label = "C"
+            btn.variant = "default"
+        else:
+            btn.label = "D"
+            btn.variant = "primary"
+
+    # ── Filter / Row selection ──────────────────────────────
 
     @on(Input.Changed, "#acct-filter")
-    def _filter_accounts(self, event: Input.Changed) -> None:
+    def _filter_accounts(self, event):
         self._populate_table(event.value.strip())
 
     @on(DataTable.RowSelected, "#acct-table")
-    def _select_account_row(self, event: DataTable.RowSelected) -> None:
-        """When a row is clicked, fill the focused debit/credit input."""
-        acct_id = str(event.row_key)  # Row.Key is a str subclass
-        focused = self.focused if hasattr(self, "focused") else None
-        if focused is None or focused.id not in ("txn-debit", "txn-credit"):
+    def _select_account_row(self, event):
+        acct_id = str(event.row_key)
+        focused = self.screen.focused
+        if focused is None or "split-acct" not in (focused.id or ""):
             return
         focused.value = acct_id
         _set_valid(focused, True)
 
-    # ── Calendar ────────────────────────────────────
+    # ── Calendar ────────────────────────────────────────────
 
     @on(Button.Pressed, "#cal-btn")
-    def _open_calendar(self) -> None:
-        def _handle_date(selected: datetime | None) -> None:
+    def _open_calendar(self):
+        def _handle_date(selected):
             if selected is not None:
                 self.query_one("#txn-date", Input).value = selected.strftime(DATE_STR)
         self.app.push_screen(DatePickerModal(), _handle_date)
 
-    # ── Submit / Cancel ─────────────────────────────
+    # ── Submit / Cancel ─────────────────────────────────────
 
     @on(Button.Pressed, "#submit")
-    def submit(self) -> None:
+    def submit(self):
         date_str = self.query_one("#txn-date", Input).value.strip()
         desc = self.query_one("#txn-desc", Input).value.strip()
-        debit_str = self.query_one("#txn-debit", Input).value.strip()
-        credit_str = self.query_one("#txn-credit", Input).value.strip()
-        amount_str = self.query_one("#txn-amount", Input).value.strip()
-
         if not all([date_str, desc]):
-            self.notify("All fields required", severity="error")
+            self.notify("Date and description required", severity="error")
             return
-        if not (debit_str.isnumeric() and credit_str.isnumeric() and amount_str.isnumeric()):
-            self.notify("Account IDs and amount must be numbers", severity="error")
-            return
-
         try:
             date = datetime.strptime(date_str, DATE_STR)
         except ValueError:
             self.query_one("#txn-date", Input).value = "Bad date format"
             return
 
-        self.dismiss((date, desc, int(credit_str), int(debit_str), int(amount_str)))
+        splits = []
+        for i in range(self.split_count):
+            acct_input = self.query_one(f"#split-acct-{i}", Input)
+            amt_input = self.query_one(f"#split-amt-{i}", Input)
+            dir_btn = self.query_one(f"#split-dir-{i}", Button)
+            acct_str = acct_input.value.strip()
+            amt_str = amt_input.value.strip()
+            if not acct_str or not amt_str:
+                self.notify(f"Split {i+1}: fill in both account and amount", severity="error")
+                return
+            if not acct_str.isnumeric():
+                self.notify(f"Split {i+1}: account must be a number", severity="error")
+                return
+            try:
+                amt = int(amt_str)
+            except ValueError:
+                self.notify(f"Split {i+1}: amount must be a number (cents)", severity="error")
+                return
+            if amt == 0:
+                self.notify(f"Split {i+1}: amount cannot be zero", severity="error")
+                return
+            is_debit = dir_btn.label == "D"
+            splits.append(Split(
+                account_id=int(acct_str),
+                amount=amt if is_debit else -amt,
+            ))
+        if len(splits) < 2:
+            self.notify("Need at least 2 splits", severity="error")
+            return
+        total = sum(s.amount for s in splits)
+        if total != 0:
+            self.notify(f"Unbalanced: debits and credits differ by {total} cents", severity="error")
+            return
+        self.dismiss((date, desc, splits))
 
     @on(Button.Pressed, "#cancel")
-    def cancel(self) -> None:
+    def cancel(self):
         self.dismiss(None)
-
 
 # ── Main App ───────────────────────────────────────────────────────
 
@@ -651,15 +726,24 @@ class LedgerApp(App[None]):
 
             # Apply filter
             if filter_ids is not None:
-                if txn.debit_acct not in filter_ids and txn.credit_acct not in filter_ids:
+                txn_accounts = {s.account_id for s in txn.splits}
+                if not txn_accounts & filter_ids:
                     continue
 
+            debits_str = ", ".join(
+                f"{self._acct_name(s.account_id)} (${s.amount/100:,.2f})"
+                for s in txn.splits if s.amount > 0
+            )
+            credits_str = ", ".join(
+                f"{self._acct_name(s.account_id)} (${-s.amount/100:,.2f})"
+                for s in txn.splits if s.amount < 0
+            )
             table.add_row(
                 txn.date.strftime(DATE_STR),
                 txn.description,
-                self._acct_name(txn.debit_acct),
-                self._acct_name(txn.credit_acct),
-                f"${txn.amount/100:,.2f}",
+                debits_str,
+                credits_str,
+                f"${txn.total()/100:,.2f}",
             )
 
     def _acct_name(self, acct_id: int) -> str:
@@ -713,12 +797,12 @@ class LedgerApp(App[None]):
     def action_add_transaction(self) -> None:
         self.push_screen(AddTransactionScreen(), self._handle_add_transaction)
 
-    def _handle_add_transaction(self, result: tuple[datetime, str, int, int, int] | None) -> None:
+    def _handle_add_transaction(self, result: tuple[datetime, str, list] | None) -> None:
         if result is None:
             return
-        date, desc, credit, debit, amount = result
+        date, desc, splits = result
         try:
-            self.manager.add_transaction(date, desc, credit, debit, amount)
+            self.manager.add_transaction(date, desc, splits)
             self.manager.generate_ledger()
             self._populate_tree()
             self._populate_table()
