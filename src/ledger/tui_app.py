@@ -624,9 +624,11 @@ class LedgerApp(App[None]):
     BINDINGS = [
         Binding("a", "add_account", "Add Account"),
         Binding("t", "add_transaction", "Add Transaction"),
+        Binding("i", "income_statement", "Income Stmt"),
+        Binding("r", "retained_earnings", "RE Stmt"),
+        Binding("b", "balance_sheet", "Balance Sheet"),
         Binding("s", "account_summary", "Summary"),
         Binding("n", "net_worth", "Net Worth"),
-        Binding("r", "refresh", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -818,6 +820,51 @@ class LedgerApp(App[None]):
         self._populate_table()
         self._refresh_status()
         self.notify("Refreshed", severity="information")
+
+    def action_income_statement(self) -> None:
+        report = self.manager.gen_income_report()
+        lines = [f"Income: ${report['income_total']/100:,.2f}"]
+        for name, total in report["income"]:
+            lines.append(f"  {name:20s}  ${total/100:>8,.2f}")
+        lines.append(f"Expenses: ${report['expenses_total']/100:,.2f}")
+        for name, total in report["expenses"]:
+            lines.append(f"  {name:20s}  ${total/100:>8,.2f}")
+        ni = report["net_income"]
+        label = "Net Income" if ni >= 0 else "Net Loss"
+        lines.append("")
+        lines.append(f"{label:10s}  ${abs(ni)/100:>8,.2f}")
+        self.notify("\n".join(lines), title="Income Statement", timeout=10)
+
+    def action_retained_earnings(self) -> None:
+        r = self.manager.gen_retained_earnings_statement()
+        lines = [f"Beginning RE:  ${r['beginning_re']/100:>8,.2f}",
+                 f"+ Net Income:  ${r['net_income']/100:>8,.2f}"]
+        if r["dividends"]:
+            lines.append(f"- Dividends:   ${r['dividends']/100:>8,.2f}")
+        lines.append("")
+        lines.append(f"Ending RE:     ${r['ending_re']/100:>8,.2f}")
+        self.notify("\n".join(lines), title="RE Statement", timeout=10)
+
+    def action_balance_sheet(self) -> None:
+        bs = self.manager.gen_balance_sheet()
+        lines = ["[bold]ASSETS[/]"]
+        for name, bal in bs["assets"]:
+            lines.append(f"  {name:25s}  ${bal/100:>8,.2f}")
+        lines.append(f"  Total: ${bs['total_assets']/100:,.2f}")
+        lines.append("")
+        lines.append("[bold]LIABILITIES[/]")
+        for name, bal in bs["liabilities"]:
+            lines.append(f"  {name:25s}  ${bal/100:>8,.2f}")
+        lines.append(f"  Total: ${bs['total_liabilities']/100:,.2f}")
+        lines.append("")
+        lines.append("[bold]EQUITY[/]")
+        for name, bal in bs["equity"]:
+            lines.append(f"  {name:25s}  ${bal/100:>8,.2f}")
+        lines.append(f"  Total: ${bs['total_equity']/100:,.2f}")
+        status = "\u2713" if bs["balanced"] else "\u2717 UNBALANCED"
+        lines.append(f"")
+        lines.append(f"A = L + E: {status}")
+        self.notify("\n".join(lines), title="Balance Sheet", timeout=15)
 
     def action_net_worth(self) -> None:
         """Show a net worth snapshot."""

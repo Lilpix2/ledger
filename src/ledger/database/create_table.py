@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     account_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     parent_id INTEGER REFERENCES accounts(account_id),
-    acct_type TEXT NOT NULL DEFAULT 'ASSET'
+    acct_type TEXT NOT NULL DEFAULT 'ASSET',
+    is_contra INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -45,6 +46,11 @@ def ensure_tables(conn):
             pass  # Already migrated or was never there
     try:
         conn.execute("ALTER TABLE journal DROP COLUMN amount")
+    except conn.OperationalError:
+        pass
+    # Migration: add is_contra column to accounts
+    try:
+        conn.execute("ALTER TABLE accounts ADD COLUMN is_contra INTEGER NOT NULL DEFAULT 0")
     except conn.OperationalError:
         pass
     conn.commit()

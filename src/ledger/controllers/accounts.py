@@ -20,10 +20,17 @@ DEBIT_NORMAL_TYPES = frozenset({"ASSET", "EXPENSE"})
 
 
 class Account:
-    def __init__(self, name: str, parent: int | None = None, acct_type: str = "ASSET"):
+    def __init__(
+        self,
+        name: str,
+        parent: int | None = None,
+        acct_type: str = "ASSET",
+        is_contra: bool = False,
+    ):
         self.name = name
         self.parent = parent
         self.acct_type = acct_type
+        self.is_contra = is_contra
         self.ledger = Ledger()
 
     def __eq__(self, value):
@@ -54,9 +61,9 @@ class AccountManager:
         if not db_accounts:
             self._generate_parents()
         else:
-            for acct_id, name, parent_id, acct_type in db_accounts:
+            for acct_id, name, parent_id, acct_type, is_contra in db_accounts:
                 parent = parent_id if parent_id is not None else 0
-                self.accounts[acct_id] = Account(name, parent, acct_type)
+                self.accounts[acct_id] = Account(name, parent, acct_type, bool(is_contra))
 
             for txn in self.db.load_transactions():
                 self.journal.add_transaction(txn)
@@ -64,18 +71,24 @@ class AccountManager:
         self.account_num = max(self.accounts.keys()) + 1
 
     def _generate_parents(self):
-        """Create the top-level parent accounts (assets, liabilities, etc.)."""
+        """Create the top-level parent accounts and default sub-accounts."""
         for name in PARENTS:
             acct_type = ACCT_TYPE_MAP.get(name, "ASSET")
             self.add_account(name, 0, acct_type)
         self.add_account('retained earnings', 3, ACCT_TYPE_MAP['equity'])
         self.add_account('cash', 1, ACCT_TYPE_MAP['assets'])
         self.add_account('accounts receivable', 1, ACCT_TYPE_MAP['assets'])
+        self.add_account('dividends', 3, ACCT_TYPE_MAP['equity'], is_contra=True)
+        self.add_account('accounts payable', 2, ACCT_TYPE_MAP['liabilities'])
 
     # ── Accounts ────────────────────────────────────────────────────
 
     def add_account(
-        self, name: str, parent: int | None = None, acct_type: str | None = None
+        self,
+        name: str,
+        parent: int | None = None,
+        acct_type: str | None = None,
+        is_contra: bool = False,
     ) -> int:
         if name in [a.name for a in self.accounts.values()]:
             raise ValueError(f"Account '{name}' already exists")
@@ -87,8 +100,8 @@ class AccountManager:
             acct_type = "ASSET"
 
         db_parent = parent if parent != 0 else None
-        acct_id = self.db.save_account(name, db_parent, acct_type)
-        self.accounts[acct_id] = Account(name, parent, acct_type)
+        acct_id = self.db.save_account(name, db_parent, acct_type, is_contra)
+        self.accounts[acct_id] = Account(name, parent, acct_type, is_contra)
         return acct_id
 
     # ── Transactions (compound) ─────────────────────────────────────
@@ -217,11 +230,7 @@ class AccountManager:
     # ── Normal Balance Logic ────────────────────────────────────────
 
     def get_top_level_parent(self, account_id: int) -> int:
-        """Walk up to find the top-level parent (direct child of root).
-
-        Returns the account ID of the top-level parent, or *account_id*
-        itself if it is already a top-level account.
-        """
+        """Walk up to find the top-level parent (direct child of root)."""
         if account_id == 0:
             return 0
         current = account_id
@@ -232,19 +241,23 @@ class AccountManager:
             current = parent
 
     def is_debit_normal(self, account_id: int) -> bool:
-        """Return ``True`` if *account_id* is debit-normal (ASSET or EXPENSE).
+        """Return True if *account_id* is debit-normal.
 
-        O(1) — uses the stored `acct_type` directly instead of walking
-        up the tree to find the top-level parent.
+        Contra accounts flip the normal balance of their type:
+        a contra-asset is credit-normal even though its type is ASSET.
         """
-        return self.accounts[account_id].acct_type in DEBIT_NORMAL_TYPES
+        acct = self.accounts[account_id]
+        normal = acct.acct_type in DEBIT_NORMAL_TYPES
+        if acct.is_contra:
+            return not normal
+        return normal
 
     def get_display_balance(self, account_id: int) -> int:
         """Return the balance as a positive number in its **normal** direction.
 
         Debit-normal accounts (assets, expenses) display the raw balance
         directly.  Credit-normal accounts (liabilities, equity, income)
-        have their sign flipped.
+        have their sign flipped.  Contra accounts flip the rule.
         """
         raw = self.aggregated_balance(account_id)
         if self.is_debit_normal(account_id):
@@ -256,7 +269,7 @@ class AccountManager:
     def check_accounting_equation(self) -> dict:
         """Return a snapshot of the accounting equation.
 
-        Aggregates by `acct_type` (no tree-walking needed).
+        Aggregates by `acct_type` (contra-aware raw balance summing).
 
         Returns
         -------
@@ -283,7 +296,16 @@ class AccountManager:
         i = -raw["INCOME"]               # credit-normal → flip
         ex = raw["EXPENSE"]              # debit-normal
 
+        # Contra assets (credit-normal ASSETS) are already included in raw
+        # They reduce a, which is correct for the equation
+
         net_income = i - ex
+        # Dividends reduce retained earnings
+        div = raw.get("DIVIDEND", 0)
+        if div:
+            # Dividends are stored as debit-normal (positive = paid)
+            e -= div
+
         rhs = l + e + net_income
         balanced = a == rhs
 
@@ -303,6 +325,8 @@ class AccountManager:
         eq = self.check_accounting_equation()
         return eq["net_worth"]
 
+    # ── Income Statement ────────────────────────────────────────────
+
     def gen_income_report(
         self,
         start_date: datetime | None = None,
@@ -312,15 +336,6 @@ class AccountManager:
 
         Aggregates transactions by sub-account under income (ID 4) and
         expenses (ID 5), filtered by an optional date range.
-
-        Parameters
-        ----------
-        start_date, end_date: datetime or None
-
-        Returns
-        -------
-        dict with keys: period, income, income_total, expenses,
-                        expenses_total, net_income
         """
         income_ids = self.get_descendant_ids(4)
         expense_ids = self.get_descendant_ids(5)
@@ -413,53 +428,215 @@ class AccountManager:
         print(f"  │   {label:32s}  ${abs(net)/100:>8,.2f}")
         print(f"  {B}")
 
-    # ── Closing Entries ─────────────────────────────────────────────
+    # ── Retained Earnings Statement ─────────────────────────────────
 
-    def close_temps(self):
-        """Close temporary accounts (income & expenses) to Retained Earnings.
+    def gen_retained_earnings_statement(self) -> dict:
+        """Build the Retained Earnings Statement.
 
-        Creates one compound closing entry that zeroes all income and
-        expense accounts, transferring their net balance to Retained
-        Earnings (ID 6).  Call ``generate_ledger()`` afterwards.
-        """
-        expense_ids = self.get_descendant_ids(5)
-        income_ids = self.get_descendant_ids(4)
-        today = datetime.today()
-
-        # Close each expense account (credit expense, debit RE)
-        for aid in expense_ids:
-            bal = self.accounts[aid].get_balance()
-            if bal == 0:
-                continue
-            self.add_transaction(today, f'closing {self.accounts[aid].name}', [
-                Split(aid, -bal),   # credit expense (to zero it)
-                Split(6, bal),      # debit retained earnings
-            ])
-
-        # Close each income account (debit income, credit RE)
-        for aid in income_ids:
-            bal = self.accounts[aid].get_balance()
-            if bal == 0:
-                continue
-            # bal is negative (credit-normal); flip sign for debits/credits
-            self.add_transaction(today, f'closing {self.accounts[aid].name}', [
-                Split(aid, -bal),   # debit income (to zero it; -negative = positive)
-                Split(6, bal),      # credit retained earnings (bal is negative = credit)
-            ])
-
-    # ── Account Summary ────────────────────────────────────────────
-
-    def gen_account_summary(self) -> dict:
-        """Build a structured account summary grouped by type.
+        Structure: Beginning RE + Net Income − Dividends = Ending RE.
 
         Returns
         -------
         dict
-            ``groups`` (list of dicts with keys: type_label, accounts,
-                        total_cents),
-            ``net_worth`` (int in cents),
-            ``balanced`` (bool)
+            ``beginning_re``, ``net_income``, ``dividends``,
+            ``ending_re`` — all in cents (display-normal).
         """
+        re_id = 6
+        re_bal_raw = self.accounts[re_id].get_balance()
+        re_actual_display = -re_bal_raw  # RE is credit-normal
+
+        ni = self.gen_income_report()["net_income"]
+
+        # Dividends (contra-equity, debit-normal, raw = positive amount paid)
+        div_ids = self.get_descendant_ids(9)
+        div_total = 0
+        for aid in div_ids:
+            bal = self.accounts[aid].get_balance()
+            if bal > 0:
+                div_total += bal
+
+        # Prior period RE from ledger, current period from operations
+        beginning_re = max(re_actual_display, 0)
+        ending_re = beginning_re + ni - div_total
+
+        return {
+            "beginning_re": beginning_re,
+            "net_income": ni,
+            "dividends": div_total,
+            "ending_re": ending_re,
+        }
+
+    def print_retained_earnings_statement(self) -> None:
+        """Print a formatted Retained Earnings Statement."""
+        r = self.gen_retained_earnings_statement()
+        B = "═" * 46
+        D = "─" * 46
+
+        print()
+        print(f"  {B}")
+        print("  │      RETAINED EARNINGS STATEMENT      │")
+        print(f"  {B}")
+        print(f"  │   Retained Earnings, Beginning  ${r['beginning_re']/100:>8,.2f}")
+        print(f"  │   + Net Income                  ${r['net_income']/100:>8,.2f}")
+        print(f"  │   {D}")
+        print(f"  │                                    ${(r['beginning_re']+r['net_income'])/100:>8,.2f}")
+        if r['dividends']:
+            print(f"  │   - Dividends                   ${r['dividends']/100:>8,.2f}")
+            print(f"  │   {D}")
+        print(f"  │   Retained Earnings, Ending    ${r['ending_re']/100:>8,.2f}")
+        print(f"  {B}")
+
+    # ── Balance Sheet ───────────────────────────────────────────────
+
+    def gen_balance_sheet(self) -> dict:
+        """Build a formal Balance Sheet (A = L + SE).
+
+        Returns
+        -------
+        dict
+            ``assets`` (list of (name, cents), sorted),
+            ``total_assets`` (int),
+            ``liabilities`` (list of (name, cents)),
+            ``total_liabilities`` (int),
+            ``equity`` (list of (name, cents)),
+            ``total_equity`` (int),
+            ``balanced`` (bool),
+            ``total_liabilities_equity`` (int)
+        """
+        # Collect leaf accounts (skip parent categories to avoid double-count).
+        tree = self.build_tree()
+        leaf_ids = set()
+        for pid, children in tree.items():
+            for cid in children:
+                if cid not in tree:
+                    leaf_ids.add(cid)
+
+        asset_ids = self.get_descendant_ids(1)
+        liability_ids = self.get_descendant_ids(2)
+        equity_ids = self.get_descendant_ids(3)
+        div_ids = self.get_descendant_ids(9)
+
+        # Use computed Retained Earnings from the RE statement
+        re_stmt = self.gen_retained_earnings_statement()
+        computed_re = re_stmt["ending_re"]
+
+        a_items: list[tuple[str, int]] = []
+        l_items: list[tuple[str, int]] = []
+        e_items: list[tuple[str, int]] = []
+
+        # Assets: contra accounts subtract, normal add
+        for aid in sorted(asset_ids):
+            if aid not in leaf_ids and aid != 0:
+                continue
+            if aid in div_ids:
+                continue
+            raw = self.accounts[aid].get_balance()
+            if raw == 0:
+                continue
+            acct = self.accounts[aid]
+            # Display: positive in normal direction
+            if self.is_debit_normal(aid):
+                bal = raw
+            else:
+                bal = -raw
+            # Contra assets reduce total; show with label
+            if acct.is_contra:
+                name = f"(-) {acct.name}"
+                bal = -bal  # negate to show as subtraction
+            else:
+                name = acct.name
+            a_items.append((name, bal))
+
+        # Liabilities: credit-normal, flip raw
+        for aid in sorted(liability_ids):
+            if aid not in leaf_ids and aid != 0:
+                continue
+            raw = self.accounts[aid].get_balance()
+            if raw == 0:
+                continue
+            acct = self.accounts[aid]
+            bal = -raw
+            l_items.append((acct.name, bal))
+
+        # Equity: use computed Retained Earnings instead of ledger balance
+        re_shown = False
+        for aid in sorted(equity_ids):
+            if aid not in leaf_ids and aid != 0:
+                continue
+            if aid == 6:
+                if computed_re != 0:
+                    e_items.append(("retained earnings", computed_re))
+                    re_shown = True
+                continue
+            if aid in div_ids:
+                continue  # skip dividends ledger balance
+            raw = self.accounts[aid].get_balance()
+            if raw == 0:
+                continue
+            acct = self.accounts[aid]
+            if self.is_debit_normal(aid):
+                bal = raw
+            else:
+                bal = -raw
+            e_items.append((acct.name, bal))
+
+        total_a = sum(b for _, b in a_items)
+        total_l = sum(b for _, b in l_items)
+        total_e = sum(b for _, b in e_items)
+
+        return {
+            "assets": a_items,
+            "total_assets": total_a,
+            "liabilities": l_items,
+            "total_liabilities": total_l,
+            "equity": e_items,
+            "total_equity": total_e,
+            "balanced": total_a == total_l + total_e,
+            "total_liabilities_equity": total_l + total_e,
+        }
+
+    def print_balance_sheet(self) -> None:
+        """Print a formatted Balance Sheet."""
+        bs = self.gen_balance_sheet()
+        B = "═" * 46
+        D = "─" * 46
+
+        print()
+        print(f"  {B}")
+        print("  │             BALANCE SHEET             │")
+        print(f"  {B}")
+        print()
+        print("  │ ASSETS")
+        print(f"  │ {D}")
+        for name, bal in bs["assets"]:
+            print(f"  │   {name:32s}  ${bal/100:>8,.2f}")
+        print(f"  │ {D}")
+        print(f"  │   {'Total Assets':32s}  ${bs['total_assets']/100:>8,.2f}")
+        print()
+        print("  │ LIABILITIES")
+        print(f"  │ {D}")
+        for name, bal in bs["liabilities"]:
+            print(f"  │   {name:32s}  ${bal/100:>8,.2f}")
+        print(f"  │ {D}")
+        print(f"  │   {'Total Liabilities':32s}  ${bs['total_liabilities']/100:>8,.2f}")
+        print()
+        print("  │ EQUITY")
+        print(f"  │ {D}")
+        for name, bal in bs["equity"]:
+            print(f"  │   {name:32s}  ${bal/100:>8,.2f}")
+        print(f"  │ {D}")
+        print(f"  │   {'Total Equity':32s}  ${bs['total_equity']/100:>8,.2f}")
+        print(f"  │   {D}")
+        te = bs["total_liabilities_equity"]
+        print(f"  │   {'Total Liab. + Equity':32s}  ${te/100:>8,.2f}")
+        status = "✓ A = L + E" if bs["balanced"] else "✗ UNBALANCED"
+        print(f"  │   {status}")
+        print(f"  {B}")
+
+    # ── Account Summary ─────────────────────────────────────────────
+
+    def gen_account_summary(self) -> dict:
+        """Build a structured account summary grouped by type."""
         TYPES_IN_ORDER = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"]
         TYPE_LABELS = {
             "ASSET": "Assets",
@@ -469,23 +646,19 @@ class AccountManager:
             "EXPENSE": "Expenses",
         }
 
-        # Collect accounts by type (skip root, skip parent categories that
-        # have no balance of their own — they'll be shown via children)
         by_type: dict[str, list[tuple[int, str, int]]] = {t: [] for t in TYPES_IN_ORDER}
 
         for aid, acct in self.accounts.items():
             if aid == 0:
                 continue
             t = acct.acct_type
-            # Use raw balance, display-normalized (positive for everything)
             raw = acct.get_balance()
-            if acct.acct_type in DEBIT_NORMAL_TYPES:
-                bal = raw               # debit-normal: already positive
+            if self.is_debit_normal(aid):
+                bal = raw
             else:
-                bal = -raw              # credit-normal: flip sign
+                bal = -raw
             by_type[t].append((aid, acct.name, bal))
 
-        # Sort each group by name, build output
         groups = []
         for t in TYPES_IN_ORDER:
             entries = sorted(by_type[t], key=lambda x: x[1])
@@ -497,7 +670,6 @@ class AccountManager:
             })
 
         eq = self.check_accounting_equation()
-
         return {
             "groups": groups,
             "net_worth": eq["net_worth"],
@@ -529,10 +701,53 @@ class AccountManager:
             print(f"  │ {S}")
             print(f"  │   {'Total ' + label:32s}  ${group['total_cents']/100:>8,.2f}")
 
-        # Bottom line
         print()
         print(f"  │ {D}")
         print(f"  │   {'Net Worth':32s}  ${report['net_worth']/100:>8,.2f}")
         eq_status = "\u2713" if report["balanced"] else "\u2717 UNBALANCED"
         print(f"  │   {'Equation':32s}  {eq_status}")
         print(f"  {B}")
+
+    # ── Closing Entries ─────────────────────────────────────────────
+
+    def close_temps(self):
+        """Close temporary accounts to Retained Earnings.
+
+        Closes income, expenses, and dividends to Retained Earnings (ID 6).
+        Call ``generate_ledger()`` afterwards.
+        """
+        expense_ids = self.get_descendant_ids(5)
+        income_ids = self.get_descendant_ids(4)
+        div_ids = self.get_descendant_ids(9)  # dividends under equity
+        today = datetime.today()
+
+        # Close each expense account (credit expense, debit RE)
+        for aid in expense_ids:
+            bal = self.accounts[aid].get_balance()
+            if bal == 0:
+                continue
+            self.add_transaction(today, f'closing {self.accounts[aid].name}', [
+                Split(aid, -bal),   # credit expense
+                Split(6, bal),      # debit retained earnings
+            ])
+
+        # Close each income account (debit income, credit RE)
+        for aid in income_ids:
+            bal = self.accounts[aid].get_balance()
+            if bal == 0:
+                continue
+            self.add_transaction(today, f'closing {self.accounts[aid].name}', [
+                Split(aid, -bal),   # debit income
+                Split(6, bal),      # credit retained earnings
+            ])
+
+        # Close dividends (credit dividends, debit RE)
+        for aid in div_ids:
+            bal = self.accounts[aid].get_balance()
+            if bal == 0:
+                continue
+            # Dividends are debit-normal, positive = paid
+            self.add_transaction(today, f'closing {self.accounts[aid].name}', [
+                Split(aid, -bal),   # credit dividends (zero them)
+                Split(6, bal),      # debit retained earnings
+            ])

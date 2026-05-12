@@ -28,14 +28,14 @@ class DatabaseController:
         with self._connect() as conn:
             ensure_tables(conn)
 
-    def load_accounts(self) -> list[tuple[int, str, int | None, str]]:
+    def load_accounts(self) -> list[tuple[int, str, int | None, str, int]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT account_id, name, parent_id, acct_type "
+                "SELECT account_id, name, parent_id, acct_type, is_contra "
                 "FROM accounts ORDER BY account_id"
             ).fetchall()
             return [
-                (r["account_id"], r["name"], r["parent_id"], r["acct_type"])
+                (r["account_id"], r["name"], r["parent_id"], r["acct_type"], r["is_contra"])
                 for r in rows
             ]
 
@@ -70,12 +70,14 @@ class DatabaseController:
         ]
 
     def save_account(
-        self, name: str, parent_id: int | None = None, acct_type: str = "ASSET"
+        self, name: str, parent_id: int | None = None, acct_type: str = "ASSET",
+        is_contra: bool = False,
     ) -> int:
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO accounts (name, parent_id, acct_type) VALUES (?, ?, ?)",
-                (name, parent_id, acct_type),
+                "INSERT INTO accounts (name, parent_id, acct_type, is_contra) "
+                "VALUES (?, ?, ?, ?)",
+                (name, parent_id, acct_type, 1 if is_contra else 0),
             )
             return cur.lastrowid
 
