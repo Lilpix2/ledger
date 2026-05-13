@@ -1425,7 +1425,7 @@ class TestCRUDThroughDialogs:
         txn_target = app.manager.add_account("TxnTarget", 1)
         child_target = app.manager.add_account("ChildTarget", 1)
         equity = next(
-            (aid for aid, a in app.manager.accounts.items() if a.name == "root"),
+            (aid for aid, a in app.manager.accounts.items() if a.name == "retained earnings"),
             6,
         )
         # Fund the parent via a txn so it has referencing splits
