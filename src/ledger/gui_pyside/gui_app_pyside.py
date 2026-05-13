@@ -151,7 +151,10 @@ class LedgerGUI(QMainWindow):
 
     def __init__(self, db_path: str = "") -> None:
         super().__init__()
-        self._manager = AccountManager(db_path)
+        if isinstance(db_path, AccountManager):
+            self._manager = db_path
+        else:
+            self._manager = AccountManager(db_path)
         self._manager.generate_ledger()
         self._init_window()
         self._build_menu()

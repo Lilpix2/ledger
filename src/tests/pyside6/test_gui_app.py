@@ -29,9 +29,13 @@ class TestLedgerGUIStructure:
     Replace with real assertions once ``LedgerGUI`` is implemented.
     """
 
-    def test_construct_raises_not_implemented(self, qt_app):
-        """LedgerGUI stub raises NotImplementedError until implemented."""
+    def test_construct_succeeds(self, qt_app):
+        """LedgerGUI constructs successfully with a manager object."""
+        import tempfile
         from ledger.gui_pyside.gui_app_pyside import LedgerGUI
+        from ledger.controllers.accounts import AccountManager
 
-        with pytest.raises(NotImplementedError):
-            LedgerGUI("/tmp/nonexistent.db")
+        with tempfile.NamedTemporaryFile(suffix=".db") as f:
+            window = LedgerGUI(AccountManager(f.name))
+        assert window is not None
+        window.close()
