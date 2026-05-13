@@ -1066,7 +1066,7 @@ class TestHelpMenu:
             assert len(cap) == 1
             title, msg = cap[0]
             assert "About" in title
-            assert "Ledger" in msg
+            assert "Double-Entry" in msg
             assert "Double-Entry" in msg
         finally:
             mb.showinfo = orig

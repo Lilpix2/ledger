@@ -855,7 +855,8 @@ class AccountManager:
             # Contra assets reduce total; show with label
             if acct.is_contra:
                 name = f"(-) {acct.name}"
-                bal = -bal  # negate to show as subtraction
+                # is_debit_normal already flipped the sign for contra;
+                # bal is already negative (reducing assets).
             else:
                 name = acct.name
             a_items.append((name, bal))
