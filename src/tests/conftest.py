@@ -41,7 +41,9 @@ class MockDB:
         return []
 
     def load_prices(self, ticker: str | None = None) -> list[Price]:
-        return []
+        if ticker is None:
+            return [Price(t, d, p) for t, d, p in self._prices]
+        return [Price(t, d, p) for t, d, p in self._prices if t == ticker]
 
     def save_account(
         self, name: str, parent_id: int | None = None,
@@ -79,16 +81,25 @@ class MockDB:
         pass
 
     def save_holding(self, holding: Holding) -> None:
-        pass
+        aid = holding.account_id
+        if aid not in self._holdings:
+            self._holdings[aid] = {}
+        self._holdings[aid][holding.ticker] = (holding.shares, holding.cost_basis_cents)
 
     def delete_holding(self, account_id: int, ticker: str) -> None:
-        pass
+        if account_id in self._holdings:
+            self._holdings[account_id].pop(ticker, None)
 
     def save_price(self, price: Price) -> None:
-        pass
+        # Upsert: replace existing entry with same ticker+date
+        for i, (t, d, p) in enumerate(self._prices):
+            if t == price.ticker and d == price.date:
+                self._prices[i] = (price.ticker, price.date, price.price_cents)
+                return
+        self._prices.append((price.ticker, price.date, price.price_cents))
 
     def bulk_save_prices(self, prices: list[tuple[str, str, int]]) -> None:
-        pass
+        self._prices.extend(prices)
 
 
 @pytest.fixture
