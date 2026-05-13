@@ -151,18 +151,22 @@ class TestAccountSelector:
 
     Black-box: interact through ``selected_id`` property and the combobox
     surface (``set()``, ``cget('values')``).
+
+    Note: Root account (ID 0, name "root") is excluded from the dropdown
+    so all tests use ``aid != 0`` to pick real accounts.
     """
 
     def test_populated(self, tk_root, fast_seeded):
-        """Selector shows all accounts in its dropdown."""
+        """Selector shows all non-root accounts in its dropdown."""
         sel = AccountSelector(tk_root, fast_seeded)
         choices = list(sel.cget("values"))
         assert len(choices) > 0
 
-        for _aid, acct in fast_seeded.accounts.items():
-            if acct.name != "Root":
-                found = any(acct.name in c for c in choices)
-                assert found, f"Account {acct.name!r} not found in choices"
+        for aid, acct in fast_seeded.accounts.items():
+            if aid == 0:
+                continue  # root account not in dropdown
+            found = any(acct.name in c for c in choices)
+            assert found, f"Account {acct.name!r} (ID {aid}) not found in choices"
 
     def test_selected_id_returns_none_initially(self, tk_root, fast_seeded):
         """Before any selection, selected_id is None."""
@@ -197,9 +201,10 @@ class TestAccountSelector:
         sel = AccountSelector(tk_root, fast_seeded)
 
         target_id = next(
-            (aid for aid, a in fast_seeded.accounts.items() if a.name != "Root"),
+            (aid for aid, a in fast_seeded.accounts.items() if aid != 0),
             None,
         )
+        assert target_id is not None, "No non-root account found"
         target_name = fast_seeded.accounts[target_id].name
 
         sel.selected_id = target_id
@@ -240,9 +245,10 @@ class TestAccountSelector:
         sel = AccountSelector(tk_root, fast_seeded)
 
         target_id = next(
-            (aid for aid, a in fast_seeded.accounts.items() if a.name != "Root"),
+            (aid for aid, a in fast_seeded.accounts.items() if aid != 0),
             None,
         )
+        assert target_id is not None, "No non-root account found"
 
         sel.selected_id = target_id
         sel.update_idletasks()

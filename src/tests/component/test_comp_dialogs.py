@@ -453,10 +453,9 @@ def _fill_meta(dlg):
     all_combos = all_widgets(dlg.dialog, ttk.Combobox)  # first combo is in add-split frame
     # Date is row 0, col 1; Desc is row 1, col 1
 
-    entries = [w for w in walk(dlg.dialog.dialog)
+    dlg_win = dlg.dialog
+    entries = [w for w in walk(dlg_win)
                if isinstance(w, ttk.Entry) and not isinstance(w, ttk.Combobox)]
-    # In a TransactionDialog, plain entries are: date, description
-    # (the add-split frame also has amt_entry + memo_entry)
     if entries:
         set_entry_text(entries[0], datetime.now().strftime(DATE_STR))
     if len(entries) > 1:
