@@ -157,7 +157,10 @@ class AccountManager:
         self.db.update_account(acct_id, name, db_parent, final_type, final_subtype)
 
     def delete_account(self, acct_id: int) -> None:
-        """Remove an account. Fails if it has children."""
+        """Remove an account. Fails if it has children.
+
+        Also removes any transactions that reference this account.
+        """
         if acct_id == 0:
             raise ValueError("Cannot delete root account")
         children = [a for a in self.accounts.values() if a.parent == acct_id]
@@ -166,6 +169,16 @@ class AccountManager:
                 f"Cannot delete '{self.accounts[acct_id].name}': "
                 f"has {len(children)} sub-account(s)"
             )
+        # Delete any transactions that reference this account first
+        # to avoid foreign key violations from the split table.
+        txn_ids_to_delete = []
+        for txn_id, txn in self.journal.transactions.items():
+            for s in txn.splits:
+                if s.account_id == acct_id:
+                    txn_ids_to_delete.append(txn_id)
+                    break
+        for txn_id in txn_ids_to_delete:
+            self.delete_transaction(txn_id)
         self.db.delete_account(acct_id)
         del self.accounts[acct_id]
 
