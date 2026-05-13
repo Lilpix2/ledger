@@ -271,7 +271,7 @@ class TransactionDialog:
 
         ttk.Label(add_frame, text="Account:").grid(row=0, column=0, padx=2)
         acct_var = tk.StringVar()
-        choices, acct_map = build_account_choices(manager)
+        choices, acct_map = build_account_choices(self.manager)
         acct_combo = ttk.Combobox(
             add_frame, textvariable=acct_var,
             values=choices, width=42, state="normal",
@@ -298,9 +298,9 @@ class TransactionDialog:
             raw = acct_var.get().strip()
             aid = acct_map.get(raw)
             if aid is not None:
-                acct = manager.accounts.get(aid)
+                acct = self.manager.accounts.get(aid)
                 if acct:
-                    is_debit.set(manager.is_debit_normal(aid))
+                    is_debit.set(self.manager.is_debit_normal(aid))
 
         acct_var.trace("w", _on_acct_select)
 
@@ -312,7 +312,7 @@ class TransactionDialog:
                     "Error", "Select a valid account from the dropdown", parent=dialog,
                 )
                 return
-            if aid not in manager.accounts:
+            if aid not in self.manager.accounts:
                 messagebox.showerror(
                     "Error", f"No account with ID {aid}", parent=dialog,
                 )
@@ -331,7 +331,7 @@ class TransactionDialog:
                 return
 
             memo = memo_var.get()
-            acct = manager.accounts.get(aid)
+            acct = self.manager.accounts.get(aid)
             acct_name = acct.name if acct else f"ID {aid}"
             if is_debit.get():
                 self.split_tree.insert("", tk.END, values=(acct_name, amt, "", memo))
@@ -350,7 +350,7 @@ class TransactionDialog:
         # ── Pre-populate splits when editing ─────────────────
         if self.edit_txn:
             for s in self.edit_txn.splits:
-                acct = manager.accounts.get(s.account_id)
+                acct = self.manager.accounts.get(s.account_id)
                 acct_name = acct.name if acct else f"ID {s.account_id}"
                 if s.amount > 0:
                     self.split_tree.insert(
@@ -383,7 +383,7 @@ class TransactionDialog:
 
             # The split tree stores account *names* in vals[0]; look up the IDs.
             name_to_id: dict[str, int] = {
-                acct.name: aid for aid, acct in manager.accounts.items()
+                acct.name: aid for aid, acct in self.manager.accounts.items()
             }
             splits: list[Split] = []
             for child in self.split_tree.get_children():
@@ -421,8 +421,8 @@ class TransactionDialog:
             try:
                 # If editing, delete the old transaction first
                 if is_edit and self.edit_txn_id is not None:
-                    manager.delete_transaction(self.edit_txn_id)
-                manager.add_transaction(date, desc, splits)
+                    self.manager.delete_transaction(self.edit_txn_id)
+                self.manager.add_transaction(date, desc, splits)
                 self.on_success()
                 dialog.destroy()
             except ValueError as e:
