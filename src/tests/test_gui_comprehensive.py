@@ -76,7 +76,7 @@ def _make_seeded_db(path: str) -> AccountManager:
             Split(ids["Roth IRA"], 500000),
             Split(ids["MESP"], 10400000),
             Split(ids["Discover"], -530000),
-            Split(6, -18170000),
+            Split(6, -18370000),
         ],
     )
 
