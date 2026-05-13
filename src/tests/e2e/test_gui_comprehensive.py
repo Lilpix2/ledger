@@ -1834,8 +1834,10 @@ class TestDeleteAccountBackend:
 
             assert src not in app.manager.accounts
             assert after < before, "Transactions not removed by cascade"
-            # The txn was deleted, so wages balance should be 0
-            assert app.manager.get_display_balance(wages) == 0
+            # The txn was deleted; the txn target (wages) balance returned to pre-txn state
+            assert app.manager.get_display_balance(wages) == 600000, (
+                "Wages should revert to pre-txn balance after delete"
+            )
             eq = app.manager.check_accounting_equation()
             assert eq["balanced"]
         finally:
