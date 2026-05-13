@@ -374,13 +374,45 @@ class TransactionDialog:
             if selected:
                 self.split_tree.delete(selected[0])
 
+        # Edit selected split — fills the form with its values, then removes the row
+        def _edit_split() -> None:
+            selected = self.split_tree.selection()
+            if not selected:
+                return
+            vals = self.split_tree.item(selected[0])["values"]
+            acct_name = str(vals[0])
+            debit = int(vals[1]) if vals[1] else 0
+            credit = int(vals[2]) if vals[2] else 0
+            memo = str(vals[3] or "")
+
+            # Find matching label in the combo
+            for label in choices:
+                if label.strip() == acct_name or label.strip().startswith(acct_name):
+                    acct_var.set(label)
+                    break
+
+            if debit:
+                amt_var.set(str(debit))
+                is_debit.set(True)
+            elif credit:
+                amt_var.set(str(credit))
+                is_debit.set(False)
+            memo_var.set(memo)
+
+            # Remove the old row so the user can re-add the edited version
+            self.split_tree.delete(selected[0])
+
         ttk.Button(add_frame, text="Add Split", command=_add_split).grid(
             row=0, column=8, padx=4,
         )
-        ttk.Button(add_frame, text="Remove", command=_remove_split).grid(
+        ttk.Button(add_frame, text="Edit", command=_edit_split).grid(
             row=0, column=9, padx=4,
         )
+        ttk.Button(add_frame, text="Remove", command=_remove_split).grid(
+            row=0, column=10, padx=4,
+        )
         self.split_tree.bind("<Delete>", lambda e: _remove_split())
+        self.split_tree.bind("<Double-1>", lambda e: _edit_split())
 
         # ── Pre-populate splits when editing ─────────────────
         if self.edit_txn:
