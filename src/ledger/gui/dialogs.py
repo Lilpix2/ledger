@@ -492,8 +492,8 @@ class TransactionDialog:
                 self.manager.add_transaction(date, desc, splits)
                 self.on_success()
                 dialog.destroy()
-            except ValueError as e:
-                messagebox.showerror("Error", str(e), parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Error", f"{type(e).__name__}: {e}", parent=dialog)
 
         ttk.Button(btn_frame, text="Submit", command=_submit).pack(
             side=tk.LEFT, padx=4,
@@ -716,19 +716,19 @@ class BuySellDialog:
 
             try:
                 if direction == "buy":
-                    manager.buy_security(
+                    self.manager.buy_security(
                         date, desc, inv_id, cash_id, ticker, shares, price_cents,
                     )
                 else:
-                    manager.sell_security(
+                    self.manager.sell_security(
                         date, desc, inv_id, cash_id,
                         ticker, shares, price_cents,
                         gain_account_id=gain_id,
                     )
                 self.on_success()
                 dialog.destroy()
-            except ValueError as e:
-                messagebox.showerror("Error", str(e), parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Error", f"{type(e).__name__}: {e}", parent=dialog)
 
         ttk.Button(btn_frame, text="Submit", command=_submit).pack(
             side=tk.LEFT, padx=4,
