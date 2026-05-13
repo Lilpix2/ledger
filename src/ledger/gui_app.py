@@ -667,29 +667,65 @@ class LedgerGUI(tk.Tk):
         add_frame = ttk.LabelFrame(frame, text="Add Split", padding=6)
         add_frame.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=6)
 
-        ttk.Label(add_frame, text="Acct ID:").grid(row=0, column=0, padx=2)
+        # ── Account dropdown (replaces text entry) ────────────────
+        ttk.Label(add_frame, text="Account:").grid(row=0, column=0, padx=2)
         split_acct_var = tk.StringVar()
-        split_acct_entry = ttk.Entry(add_frame, textvariable=split_acct_var, width=8)
-        split_acct_entry.grid(row=0, column=1, padx=2)
+        split_acct_combo = ttk.Combobox(
+            add_frame, textvariable=split_acct_var,
+            width=42, state="normal",
+        )
+        split_acct_combo.grid(row=0, column=1, padx=2, columnspan=2)
 
-        ttk.Label(add_frame, text="Amount:").grid(row=0, column=2, padx=2)
+        # Populate with all accounts (sorted, flattened tree order)
+        acct_choices: list[str] = []
+        tree_data = self.manager.build_tree()
+        def _walk(parent_id: int, depth: int = 0):
+            for cid in sorted(tree_data.get(parent_id, [])):
+                acct = self.manager.accounts.get(cid)
+                if not acct:
+                    continue
+                prefix = "  " * depth
+                label = f"{prefix}{cid:3d}: {acct.name} ({acct.acct_type})"
+                if acct.account_subtype:
+                    label += f" [{acct.account_subtype}]"
+                acct_choices.append(label)
+                _walk(cid, depth + 1)
+        _walk(0)
+        split_acct_combo["values"] = acct_choices
+
+        ttk.Label(add_frame, text="Amount:").grid(row=0, column=3, padx=2)
         split_amt_var = tk.StringVar()
         split_amt_entry = ttk.Entry(add_frame, textvariable=split_amt_var, width=10)
-        split_amt_entry.grid(row=0, column=3, padx=2)
+        split_amt_entry.grid(row=0, column=4, padx=2)
 
         is_debit_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(add_frame, text="Debit", variable=is_debit_var).grid(row=0, column=4, padx=2)
+        ttk.Checkbutton(add_frame, text="Debit", variable=is_debit_var).grid(row=0, column=5, padx=2)
 
-        ttk.Label(add_frame, text="Memo:").grid(row=0, column=5, padx=2)
+        ttk.Label(add_frame, text="Memo:").grid(row=0, column=6, padx=2)
         split_memo_var = tk.StringVar()
-        memo_entry = ttk.Entry(add_frame, textvariable=split_memo_var, width=15)
-        memo_entry.grid(row=0, column=6, padx=2)
+        memo_entry = ttk.Entry(add_frame, textvariable=split_memo_var, width=12)
+        memo_entry.grid(row=0, column=7, padx=2)
+
+        # Auto-tick D/C based on account type
+        def _on_acct_select(*args):
+            raw = split_acct_var.get()
+            if ":" not in raw:
+                return
+            try:
+                acct_id = int(raw.split(":")[0].strip())
+            except ValueError:
+                return
+            acct = self.manager.accounts.get(acct_id)
+            if acct:
+                is_debit_var.set(self.manager.is_debit_normal(acct_id))
+        split_acct_var.trace("w", _on_acct_select)
 
         def add_split():
+            raw = split_acct_var.get()
             try:
-                acct_id = int(split_acct_var.get())
-            except ValueError:
-                messagebox.showerror("Error", "Account ID must be a number", parent=dialog)
+                acct_id = int(raw.split(":")[0].strip())
+            except (ValueError, IndexError):
+                messagebox.showerror("Error", "Select a valid account from the dropdown", parent=dialog)
                 return
             if acct_id not in self.manager.accounts:
                 messagebox.showerror("Error", f"No account with ID {acct_id}", parent=dialog)
@@ -712,9 +748,9 @@ class LedgerGUI(tk.Tk):
             split_acct_var.set("")
             split_amt_var.set("")
             split_memo_var.set("")
-            split_acct_entry.focus()
+            split_acct_combo.focus()
 
-        ttk.Button(add_frame, text="Add Split", command=add_split).grid(row=0, column=7, padx=4)
+        ttk.Button(add_frame, text="Add Split", command=add_split).grid(row=0, column=8, padx=4)
 
         # Buttons
         btn_frame = ttk.Frame(frame)
