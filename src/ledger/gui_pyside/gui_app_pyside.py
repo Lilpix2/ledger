@@ -166,22 +166,36 @@ class LedgerGUI(QMainWindow):
     def _build_menu(self) -> None:
         menubar = self.menuBar()
 
+        # ── File ──
         file_menu = menubar.addMenu("File")
-        file_menu.addAction("Refresh")
+        refresh_action = file_menu.addAction("Refresh")
+        refresh_action.triggered.connect(lambda: self._on_toolbar("Refresh"))
         file_menu.addSeparator()
-        file_menu.addAction("Quit")
+        quit_action = file_menu.addAction("Quit")
+        quit_action.triggered.connect(self.close)
 
+        # ── Accounts ──
         accounts_menu = menubar.addMenu("Accounts")
-        accounts_menu.addAction("New Account...")
+        new_acct_action = accounts_menu.addAction("New Account…")
+        new_acct_action.triggered.connect(lambda: self._on_toolbar("New Account"))
 
+        # ── Transactions ──
         txn_menu = menubar.addMenu("Transactions")
-        txn_menu.addAction("New Transaction...")
+        new_txn_action = txn_menu.addAction("New Transaction…")
+        new_txn_action.triggered.connect(lambda: self._on_toolbar("New Transaction"))
         txn_menu.addSeparator()
-        txn_menu.addAction("Income Statement")
-        txn_menu.addAction("Balance Sheet")
 
+        inc_stmt = txn_menu.addAction("Income Statement")
+        inc_stmt.triggered.connect(self._show_income_stmt)
+        bal_sheet = txn_menu.addAction("Balance Sheet")
+        bal_sheet.triggered.connect(self._show_balance_sheet)
+        net_worth = txn_menu.addAction("Net Worth")
+        net_worth.triggered.connect(self._show_net_worth)
+
+        # ── Help ──
         help_menu = menubar.addMenu("Help")
-        help_menu.addAction("About")
+        about_action = help_menu.addAction("About")
+        about_action.triggered.connect(self._show_about)
 
     def _build_status_bar(self) -> None:
         self._status = QStatusBar()
@@ -310,15 +324,58 @@ class LedgerGUI(QMainWindow):
         )
 
     def _on_toolbar(self, action: str) -> None:
-        if action == "Refresh":
-            self._manager.generate_ledger()
-            self._table_model.refresh()
-            self._tree_model = self._build_tree_model()
-            self._tree.setModel(self._tree_model)
-            self._refresh_status()
-            self._refresh_portfolio()
+        if action == "New Account":
+            self._dialog_new_account()
+        elif action == "New Transaction":
+            self._dialog_new_transaction()
+        elif action == "Refresh":
+            self._refresh_all_internal()
+
+    def _refresh_all_internal(self) -> None:
+        self._manager.generate_ledger()
+        self._table_model.refresh()
+        self._tree_model = self._build_tree_model()
+        self._tree.setModel(self._tree_model)
+        self._refresh_status()
+        self._refresh_portfolio()
 
     def _refresh_tree(self) -> None:
         """Rebuild the account tree model from scratch."""
-        self._tree_model = self._build_tree_model()
-        self._tree.setModel(self._tree_model)
+        self._refresh_all_internal()
+
+    def _dialog_new_account(self) -> None:
+        from ledger.gui_pyside.dialogs import AccountDialog
+        dlg = AccountDialog(self._manager, self._on_dialog_success)
+        dlg.exec()
+
+    def _dialog_new_transaction(self) -> None:
+        from ledger.gui_pyside.dialogs import TransactionDialog
+        dlg = TransactionDialog(self._manager, self._on_dialog_success)
+        dlg.exec()
+
+    def _on_dialog_success(self) -> None:
+        self._refresh_all_internal()
+
+    # ── Reports ────────────────────────────────────────────
+
+    def _show_report(self, report_func_name: str) -> None:
+        import ledger.gui_pyside.reports as reports_mod
+        report_func = getattr(reports_mod, report_func_name, None)
+        if report_func:
+            report_func(self, self._manager)
+
+    def _show_income_stmt(self) -> None:
+        import ledger.gui_pyside.reports as reports_mod
+        reports_mod.show_income_stmt(self, self._manager)
+
+    def _show_balance_sheet(self) -> None:
+        import ledger.gui_pyside.reports as reports_mod
+        reports_mod.show_balance_sheet(self, self._manager)
+
+    def _show_net_worth(self) -> None:
+        import ledger.gui_pyside.reports as reports_mod
+        reports_mod.show_net_worth(self, self._manager)
+
+    def _show_about(self) -> None:
+        import ledger.gui_pyside.reports as reports_mod
+        reports_mod.show_about(self)

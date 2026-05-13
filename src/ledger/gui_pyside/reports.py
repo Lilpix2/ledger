@@ -19,7 +19,33 @@ def _show_text(parent, title: str, text: str) -> None:
     if capture is not None:
         capture.append((title, text))
         return
-    raise NotImplementedError("PySide6 _show_text not implemented yet")
+
+    # Open a real QDialog with the report text
+    from PySide6.QtWidgets import (QApplication, QDialog, QTextEdit,
+                                     QPushButton, QVBoxLayout, QHBoxLayout)
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.resize(600, 400)
+
+    layout = QVBoxLayout(dialog)
+
+    text_edit = QTextEdit()
+    text_edit.setPlainText(text)
+    text_edit.setReadOnly(True)
+    layout.addWidget(text_edit)
+
+    btn_layout = QHBoxLayout()
+    copy_btn = QPushButton("Copy to Clipboard")
+    copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(text))
+    close_btn = QPushButton("Close")
+    close_btn.clicked.connect(dialog.accept)
+
+    btn_layout.addWidget(copy_btn)
+    btn_layout.addStretch()
+    btn_layout.addWidget(close_btn)
+    layout.addLayout(btn_layout)
+
+    dialog.exec()
 
 
 def show_net_worth(parent, manager) -> None:
