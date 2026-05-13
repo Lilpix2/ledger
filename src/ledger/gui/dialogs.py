@@ -169,10 +169,14 @@ class AccountDialog:
 
 
 class TransactionDialog:
-    """Modal dialog for creating a compound (multi-split) journal entry.
+    """Modal dialog for creating or editing a compound (multi-split) journal entry.
 
     Users add individual splits (account, amount, debit/credit, memo)
     one at a time, then submit the full balanced transaction.
+
+    Pass ``edit_txn`` and ``edit_txn_id`` to pre-populate for editing:
+        TransactionDialog(parent, manager, on_success,
+                          edit_txn=existing_txn, edit_txn_id=5)
 
     Validation:
         • At least 2 splits required
@@ -186,16 +190,21 @@ class TransactionDialog:
         parent: tk.Widget,
         manager: AccountManager,
         on_success: Callable[[], None],
+        edit_txn: JournalTransaction | None = None,
+        edit_txn_id: int | None = None,
     ):
         self.manager = manager
         self.on_success = on_success
+        self.edit_txn = edit_txn
+        self.edit_txn_id = edit_txn_id
         self._build(parent)
 
     # ── Widget layout ──────────────────────────────────────────
 
     def _build(self, parent: tk.Widget) -> None:
         dialog = tk.Toplevel(parent)
-        dialog.title("New Transaction")
+        is_edit = self.edit_txn is not None
+        dialog.title("Edit Transaction" if is_edit else "New Transaction")
         dialog.geometry("500x450")
         dialog.resizable(True, True)
         dialog.transient(parent)
@@ -207,13 +216,16 @@ class TransactionDialog:
 
         # ── Date ──────────────────────────────────────────────
         ttk.Label(frame, text="Date:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        date_var = tk.StringVar(value=datetime.now().strftime(DATE_STR))
+        date_var = tk.StringVar(
+            value=self.edit_txn.date.strftime(DATE_STR) if self.edit_txn
+                   else datetime.now().strftime(DATE_STR)
+        )
         date_entry = ttk.Entry(frame, textvariable=date_var, width=25)
         date_entry.grid(row=0, column=1, sticky=tk.W, pady=2)
 
         # ── Description ───────────────────────────────────────
         ttk.Label(frame, text="Description:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        desc_var = tk.StringVar()
+        desc_var = tk.StringVar(value=self.edit_txn.description if self.edit_txn else "")
         desc_entry = ttk.Entry(frame, textvariable=desc_var, width=40)
         desc_entry.grid(row=1, column=1, sticky=tk.EW, pady=2, columnspan=2)
         frame.columnconfigure(1, weight=1)
@@ -328,6 +340,20 @@ class TransactionDialog:
             row=0, column=8, padx=4,
         )
 
+        # ── Pre-populate splits when editing ─────────────────
+        if self.edit_txn:
+            for s in self.edit_txn.splits:
+                acct = manager.accounts.get(s.account_id)
+                acct_name = acct.name if acct else f"ID {s.account_id}"
+                if s.amount > 0:
+                    self.split_tree.insert(
+                        "", tk.END, values=(acct_name, s.amount, "", s.memo),
+                    )
+                else:
+                    self.split_tree.insert(
+                        "", tk.END, values=(acct_name, "", -s.amount, s.memo),
+                    )
+
         # ── Submit / Cancel ───────────────────────────────────
         btn_frame = ttk.Frame(frame)
         btn_frame.grid(row=5, column=0, columnspan=3, pady=12)
@@ -386,6 +412,9 @@ class TransactionDialog:
                 return
 
             try:
+                # If editing, delete the old transaction first
+                if is_edit and self.edit_txn_id is not None:
+                    manager.delete_transaction(self.edit_txn_id)
                 manager.add_transaction(date, desc, splits)
                 self.on_success()
                 dialog.destroy()

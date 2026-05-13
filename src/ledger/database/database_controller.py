@@ -93,13 +93,25 @@ class DatabaseController:
                 (date, description),
             )
             jid = cur.lastrowid
-            for s in splits:
-                conn.execute(
-                    "INSERT INTO split (journal_id, account_id, amount, memo) "
-                    "VALUES (?, ?, ?, ?)",
-                    (jid, s.account_id, s.amount, s.memo),
-                )
+            self._save_splits(conn, jid, splits)
             return jid
+
+    def delete_transaction(self, txn_id: int) -> None:
+        """Remove a journal entry and all its splits."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM split WHERE journal_id = ?", (txn_id,))
+            conn.execute("DELETE FROM journal WHERE journal_id = ?", (txn_id,))
+
+    @staticmethod
+    def _save_splits(
+        conn: sqlite3.Connection, jid: int, splits: list[Split],
+    ) -> None:
+        for s in splits:
+            conn.execute(
+                "INSERT INTO split (journal_id, account_id, amount, memo) "
+                "VALUES (?, ?, ?, ?)",
+                (jid, s.account_id, s.amount, s.memo),
+            )
 
     # ── Holdings ──────────────────────────────────────────────────────
 

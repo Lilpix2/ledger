@@ -14,11 +14,19 @@ class Journal:
         self.sorted_ids: list[int] = []
         self.id_num = 0
 
-    def add_transaction(self, txn: JournalTransaction):
+    def add_transaction(self, txn: JournalTransaction) -> int:
         self.transactions[self.id_num] = txn
         self.sorted_ids.append(self.id_num)
         self.id_num += 1
         return self.id_num - 1
+
+    def delete_transaction(self, txn_id: int) -> int:
+        """Remove a journal entry by ID. Returns the removed ID."""
+        if txn_id not in self.transactions:
+            raise KeyError(f"Transaction {txn_id} not found")
+        del self.transactions[txn_id]
+        self.sorted_ids = [i for i in self.sorted_ids if i != txn_id]
+        return txn_id
 
     def chronological(self) -> list[JournalTransaction]:
         self.sorted_ids.sort(key=lambda i: self.transactions[i].date)

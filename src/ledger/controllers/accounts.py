@@ -173,6 +173,12 @@ class AccountManager:
         txn = JournalTransaction(date, description, splits)
         return self.journal.add_transaction(txn)
 
+    def delete_transaction(self, txn_id: int) -> None:
+        """Remove a journal entry and regenerate all account balances."""
+        self.journal.delete_transaction(txn_id)
+        self.db.delete_transaction(txn_id)
+        self.generate_ledger()
+
     # ── Ledger Generation ──────────────────────────────────────────
 
     def generate_ledger(self):

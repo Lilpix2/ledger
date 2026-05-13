@@ -228,6 +228,7 @@ class LedgerGUI(tk.Tk):
 
         self.transaction_table.pack(fill=tk.BOTH, expand=True)
         self.transaction_table.bind("<Double-1>", self._on_transaction_double_click)
+        self.transaction_table.bind("<Button-3>", self._on_transaction_right_click)
         paned.add(right_frame, weight=2)
 
     # ── Portfolio tab ─────────────────────────────────────────────
@@ -495,6 +496,30 @@ class LedgerGUI(tk.Tk):
     def _dialog_add_transaction(self) -> None:
         TransactionDialog(self, self.manager, self._refresh_all)
 
+    def _dialog_edit_transaction(self, txn_id: int) -> None:
+        txn = self.manager.journal.transactions.get(txn_id)
+        if txn:
+            TransactionDialog(
+                self, self.manager, self._refresh_all,
+                edit_txn=txn, edit_txn_id=txn_id,
+            )
+
+    def _dialog_delete_transaction(self, txn_id: int) -> None:
+        from tkinter import messagebox
+        txn = self.manager.journal.transactions.get(txn_id)
+        if not txn:
+            return
+        desc = txn.description[:50]
+        if messagebox.askyesno(
+            "Delete Transaction",
+            f"Delete transaction #{txn_id}\n'{desc}'?\n\nThis cannot be undone.",
+        ):
+            try:
+                self.manager.delete_transaction(txn_id)
+                self._refresh_all()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
     def _dialog_buy_sell(self) -> None:
         BuySellDialog(self, self.manager, self._refresh_all)
 
@@ -535,7 +560,7 @@ class LedgerGUI(tk.Tk):
                 pass
 
     def _on_transaction_double_click(self, event: object = None) -> None:
-        """Show split details for the double-clicked journal entry."""
+        """Open the TransactionDialog to edit the double-clicked entry."""
         selected = self.transaction_table.selection()
         if not selected:
             return
@@ -543,34 +568,33 @@ class LedgerGUI(tk.Tk):
             txn_id = int(selected[0])
         except ValueError:
             return
+        self._dialog_edit_transaction(txn_id)
 
-        txn = self.manager.journal.transactions.get(txn_id)
-        if not txn:
+    def _on_transaction_right_click(self, event: object) -> None:
+        """Show context menu for a journal entry (Edit / Delete)."""
+        # Identify the row under the cursor
+        item = self.transaction_table.identify_row(event.y)  # type: ignore[attr-defined]
+        if not item:
+            return
+        try:
+            txn_id = int(item)
+        except ValueError:
             return
 
-        from tkinter import messagebox
+        # Select this row
+        self.transaction_table.selection_set(item)
 
-        lines = [
-            f"Transaction #{txn_id}",
-            f"Date: {txn.date.strftime(DATE_STR)}",
-            f"Description: {txn.description}",
-            "",
-            "Splits:",
-        ]
-        for s in txn.splits:
-            acct = self.manager.accounts.get(s.account_id)
-            acct_name = acct.name if acct else f"ID {s.account_id}"
-            direction = "Dr" if s.amount > 0 else "Cr"
-            lines.append(
-                f"  {direction}  {acct_name:30s}  {format_cents(abs(s.amount)):>12s}",
-            )
-            if s.memo:
-                lines.append(f"  {'':3s}  {'':30s}  {s.memo}")
-
-        lines.append("")
-        lines.append(f"Total: {format_cents(txn.total())}")
-
-        messagebox.showinfo(f"Transaction #{txn_id}", "\n".join(lines))
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="Edit Transaction",
+            command=lambda: self._dialog_edit_transaction(txn_id),
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Delete Transaction",
+            command=lambda: self._dialog_delete_transaction(txn_id),
+        )
+        menu.tk_popup(event.x_root, event.y_root)
 
     def _on_close(self) -> None:
         self.manager.db = None  # release DB connection
