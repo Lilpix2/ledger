@@ -50,6 +50,8 @@ class QIFRecord:
     check_num: str = ""
     cleared: str = ""
     ticker: str = ""
+    quantity: float = 0.0  # Q field — number of shares
+    price: float = 0.0     # I field — price per share
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -219,14 +221,20 @@ def parse_qif(text: str) -> list[QIFRecord]:
                 current.cleared = value
         elif code == "Y":
             current.ticker = value
+        elif code == "I":
+            try:
+                current.price = float(value)
+            except ValueError:
+                pass
+        elif code == "Q":
+            try:
+                current.quantity = float(value)
+            except ValueError:
+                pass
         # Fields we don't store
-        elif code in ("I", "Q", "$", "%"):
+        elif code in ("$", "%"):
             pass
         # Any other code is ignored
-
-    # Don't forget the last record
-    if current is not None:
-        records.append(current)
 
     # Post-process: infer payee for investment records that lack a P field
     for r in records:
@@ -236,6 +244,75 @@ def parse_qif(text: str) -> list[QIFRecord]:
                 r.payee = f"{action} {r.ticker}"
             else:
                 r.payee = action
+
+    return records
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Price section parser (also used by import_529.py)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _parse_prices(text: str) -> list[tuple[str, int, str]]:
+    """Parse !Type:Prices section from QIF text.
+
+    Returns list of (ticker, price_cents, date_str) tuples.
+
+    Price format::
+
+        "TICKER",1877 3/4," 3/26'25"
+        ^
+    """
+    results: list[tuple[str, int, str]] = []
+    in_prices = False
+
+    for line in text.splitlines():
+        line = line.rstrip("\r").strip()
+        if not line:
+            continue
+        # Handle ^!Type:Prices (same line, no newline) — must check BEFORE in_prices guard
+        if line.startswith("^") and len(line) > 1:
+            remainder = line[1:].strip()
+            if remainder.startswith("!Type:Prices"):
+                in_prices = True
+                continue
+            elif remainder.startswith("!"):
+                in_prices = False
+                continue
+
+        if line == "!Type:Prices":
+            in_prices = True
+            continue
+        if not in_prices:
+            continue
+        if line == "^":
+            continue
+
+        # Parse: "TICKER",price," date"
+        parts = [p.strip().strip('"') for p in line.split(",")]
+        if len(parts) >= 3:
+            ticker = parts[0]
+            raw_price = parts[1].strip()
+            # Handle fraction prices like "1877 3/4"
+            frac_parts = raw_price.split()
+            if len(frac_parts) == 2 and "/" in frac_parts[1]:
+                whole = float(frac_parts[0])
+                num, den = frac_parts[1].split("/")
+                price_dollars = whole + float(num) / float(den)
+            else:
+                try:
+                    price_dollars = float(raw_price)
+                except ValueError:
+                    continue
+            price_cents = int(round(price_dollars * 100))
+            date_str = parts[2].strip()
+            results.append((ticker, price_cents, date_str))
+
+    return results
+
+    # Don't forget the last record
+    if current is not None:
+        records.append(current)
 
     return records
 
