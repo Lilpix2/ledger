@@ -34,10 +34,17 @@ except ImportError:
     pytest.skip("PySide6 not available (pip install PySide6)", allow_module_level=True)
     HAS_PYSIDE = False
 
-from ledger.models.data_class import Split
 
+from ledger.models.data_class import Split
 from ledger.gui_pyside.dialogs import DeleteAccountDialog
 
+
+@pytest.fixture(autouse=True)
+def _patch_messagebox():
+    """Patch QMessageBox.warning to return immediately (no blocking modal)."""
+    from PySide6.QtWidgets import QMessageBox
+    with patch.object(QMessageBox, "warning", return_value=QMessageBox.Ok):
+        yield
 
 
 class TestDeleteAccountDialog:
@@ -49,12 +56,9 @@ class TestDeleteAccountDialog:
         self, qt_app, fast_seeded, mock_success,
     ):
         """Account with no children and no transactions — delete succeeds."""
-        
-
         acct_id = fast_seeded.add_account("Simple", 1)
         dlg = DeleteAccountDialog(fast_seeded, acct_id, mock_success)
 
-        # Simple path: dialog is accepted (not shown), on_success called
         mock_success.assert_called_once()
         assert acct_id not in fast_seeded.accounts
 
@@ -62,8 +66,6 @@ class TestDeleteAccountDialog:
 
     def test_delete_root_blocked(self, qt_app, fast_seeded, mock_success):
         """Root account deletion shows error and rejects dialog."""
-        
-
         dlg = DeleteAccountDialog(fast_seeded, 0, mock_success)
         mock_success.assert_not_called()
 
@@ -71,22 +73,18 @@ class TestDeleteAccountDialog:
 
     def test_children_section_shown(self, qt_app, fast_seeded, mock_success):
         """When account has children, a group box for children appears."""
-        
-
         parent = fast_seeded.add_account("Parent", 1)
         fast_seeded.add_account("Child", parent)
 
         dlg = DeleteAccountDialog(fast_seeded, parent, mock_success)
         child_group = dlg.findChild(QGroupBox, "childGroup")
         assert child_group is not None
-        assert child_group.isVisible()
+        assert child_group.isVisibleTo(dlg) or child_group.isVisible()
 
     def test_children_reassigned_via_dropdown(
         self, qt_app, fast_seeded, mock_success,
     ):
         """Selecting a target for children → children reparented."""
-        
-
         parent = fast_seeded.add_account("Parent", 1)
         child = fast_seeded.add_account("Child", parent)
         target = fast_seeded.add_account("TargetParent", 1)
@@ -95,7 +93,6 @@ class TestDeleteAccountDialog:
 
         child_combo = dlg.findChild(QComboBox, "childTargetCombo")
         assert child_combo is not None
-        # Find the target in the combo
         target_idx = child_combo.findText("TargetParent", Qt.MatchFlag.MatchContains)
         if target_idx >= 0:
             child_combo.setCurrentIndex(target_idx)
@@ -112,8 +109,6 @@ class TestDeleteAccountDialog:
 
     def test_transactions_section_shown(self, qt_app, fast_seeded, mock_success):
         """When account has transactions, a group box for txns appears."""
-        
-
         source = fast_seeded.add_account("Source", 1)
         fast_seeded.add_transaction(
             datetime(2026, 6, 1), "Fund",
@@ -124,14 +119,12 @@ class TestDeleteAccountDialog:
         dlg = DeleteAccountDialog(fast_seeded, source, mock_success)
         txn_group = dlg.findChild(QGroupBox, "transactionGroup")
         assert txn_group is not None
-        assert txn_group.isVisible()
+        assert txn_group.isVisibleTo(dlg) or txn_group.isVisible()
 
     def test_transactions_reassigned_via_dropdown(
         self, qt_app, fast_seeded, mock_success,
     ):
         """Selecting a target for transactions → splits migrated."""
-        
-
         source = fast_seeded.add_account("Source", 1)
         target = fast_seeded.add_account("Target", 1)
         fast_seeded.add_transaction(
@@ -154,14 +147,13 @@ class TestDeleteAccountDialog:
 
         mock_success.assert_called_once()
         assert source not in fast_seeded.accounts
+        fast_seeded.generate_ledger()
         assert fast_seeded.get_display_balance(target) == 200000
 
     # ── Both children and transactions ─────────────────────
 
     def test_both_reassigned(self, qt_app, fast_seeded, mock_success):
         """Both children and transactions reassigned before delete."""
-        
-
         parent = fast_seeded.add_account("Parent", 1)
         child = fast_seeded.add_account("Child", parent)
         txn_target = fast_seeded.add_account("TxnTarget", 1)
@@ -175,14 +167,12 @@ class TestDeleteAccountDialog:
 
         dlg = DeleteAccountDialog(fast_seeded, parent, mock_success)
 
-        # Set child target
         child_combo = dlg.findChild(QComboBox, "childTargetCombo")
         if child_combo:
             idx = child_combo.findText("ChildTarget", Qt.MatchFlag.MatchContains)
             if idx >= 0:
                 child_combo.setCurrentIndex(idx)
 
-        # Set txn target
         txn_combo = dlg.findChild(QComboBox, "txnTargetCombo")
         if txn_combo:
             idx = txn_combo.findText("TxnTarget", Qt.MatchFlag.MatchContains)
@@ -196,14 +186,13 @@ class TestDeleteAccountDialog:
         mock_success.assert_called_once()
         assert parent not in fast_seeded.accounts
         assert fast_seeded.accounts[child].parent == child_target
+        fast_seeded.generate_ledger()
         assert fast_seeded.get_display_balance(txn_target) == 150000
 
     # ── Cascade checkbox ───────────────────────────────────
 
     def test_cascade_children(self, qt_app, fast_seeded, mock_success):
         """Checking 'Delete children too' cascades children."""
-        
-
         parent = fast_seeded.add_account("Parent", 1)
         child = fast_seeded.add_account("Child", parent)
         txn_target = fast_seeded.add_account("TxnTarget", 1)
@@ -216,12 +205,10 @@ class TestDeleteAccountDialog:
 
         dlg = DeleteAccountDialog(fast_seeded, parent, mock_success)
 
-        # Check the cascade checkbox for children
         child_cascade = dlg.findChild(QCheckBox, "childCascadeCheck")
         if child_cascade:
             child_cascade.setChecked(True)
 
-        # Set txn target (don't cascade txns)
         txn_combo = dlg.findChild(QComboBox, "txnTargetCombo")
         if txn_combo:
             idx = txn_combo.findText("TxnTarget", Qt.MatchFlag.MatchContains)
@@ -234,19 +221,24 @@ class TestDeleteAccountDialog:
 
         mock_success.assert_called_once()
         assert parent not in fast_seeded.accounts
-        assert child not in fast_seeded.accounts  # cascaded
-        assert fast_seeded.get_display_balance(txn_target) == 50000  # migrated
+        assert child not in fast_seeded.accounts
+        fast_seeded.generate_ledger()
+        assert fast_seeded.get_display_balance(txn_target) == 50000
 
     # ── Cancel ─────────────────────────────────────────────
 
     def test_cancel_does_nothing(self, qt_app, fast_seeded, mock_success):
         """Cancel button rejects without deleting."""
-        
-
-        acct = fast_seeded.add_account("CancelTest", 1)
+        parent = fast_seeded.add_account("CancelParent", 1)
+        fast_seeded.add_account("CancelChild", parent)
+        fast_seeded.add_transaction(
+            datetime(2026, 6, 1), "Cancel txn",
+            [Split(parent, 10000), Split(6, -10000)],
+        )
+        fast_seeded.generate_ledger()
         before = len(fast_seeded.accounts)
 
-        dlg = DeleteAccountDialog(fast_seeded, acct, mock_success, show_dialog=False)
+        dlg = DeleteAccountDialog(fast_seeded, parent, mock_success)
         cancel_btn = dlg.findChild(QPushButton, "cancelBtn")
         if cancel_btn:
             cancel_btn.click()

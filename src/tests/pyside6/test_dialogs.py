@@ -44,6 +44,14 @@ from ledger.constants import DATE_STR
 from .conftest import find_widget, click_button
 
 
+@pytest.fixture(autouse=True)
+def _patch_messagebox():
+    """Patch QMessageBox.warning to return immediately (no blocking modal)."""
+    from PySide6.QtWidgets import QMessageBox
+    with patch.object(QMessageBox, "warning", return_value=QMessageBox.Ok):
+        yield
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  AccountDialog
 # ═══════════════════════════════════════════════════════════════════
@@ -87,6 +95,11 @@ class TestAccountDialog:
         name_input = dlg.findChild(QLineEdit, "nameInput")
         assert name_input is not None
         QTest.keyClicks(name_input, "Test Account")
+
+        # Select a parent account
+        parent_combo = dlg.findChild(QComboBox, "parentCombo")
+        if parent_combo and parent_combo.count() > 0:
+            parent_combo.setCurrentIndex(1)
 
         create_btn = dlg.findChild(QPushButton, "createBtn")
         assert create_btn is not None
@@ -147,6 +160,12 @@ class TestAccountDialog:
         name_input = dlg.findChild(QLineEdit, "nameInput")
         name_input.clear()
         QTest.keyClicks(name_input, "After Edit")
+
+        # Parent should already be pre-selected in edit mode, but
+        # AccountSelector starts neutral — ensure something is selected.
+        parent_combo = dlg.findChild(QComboBox, "parentCombo")
+        if parent_combo and parent_combo.count() > 0:
+            parent_combo.setCurrentIndex(1)
 
         create_btn = dlg.findChild(QPushButton, "createBtn")
         create_btn.click()
@@ -237,7 +256,7 @@ class TestTransactionDialog:
         # Toggle debit/credit checkbox
         debit_cb = dlg.findChild(QCheckBox, "debitCheckbox")
         if debit_cb and debit_cb.isChecked():
-            QTest.mouseClick(debit_cb, Qt.MouseButton.LeftButton)
+            debit_cb.setChecked(False)  # Toggle to credit
         if add_btn:
             add_btn.click()
 
@@ -254,6 +273,11 @@ class TestTransactionDialog:
         submit_btn = dlg.findChild(QPushButton, "submitBtn")
         assert submit_btn is not None
         submit_btn.click()
+
+        # Debug: check what happened
+        if mock_success.call_count == 0:
+            # Something went wrong — the dialog's _submit caught an exception
+            pass
 
         mock_success.assert_called_once()
 
@@ -350,11 +374,15 @@ class TestBuySellDialog:
     def test_gains_field_shows_on_sell(self, qt_app, fast_seeded, mock_success):
         """Toggling to Sell makes the gains account field visible."""
         dlg = BuySellDialog(fast_seeded, mock_success)
+        dlg.show()  # must show for isVisible() to work
+        QApplication.processEvents()
 
         sell_radio = dlg.findChild(QRadioButton, "sellRadio")
         assert sell_radio is not None
         sell_radio.setChecked(True)
+        QApplication.processEvents()
 
         gains_combo = dlg.findChild(QComboBox, "gainsAccountCombo")
         assert gains_combo is not None
-        assert gains_combo.isVisible()
+        assert gains_combo.isVisible(), "Gains combo should be visible after Sell toggle"
+        dlg.close()

@@ -1,18 +1,20 @@
 """
 PySide6 widgets for the double-entry ledger system.
 
-Stub module for TDD — AccountSelector returns NotImplementedError.
-Pure functions (format_cents, build_account_choices) are duplicated
-from the tkinter widgets module to avoid importing tkinter at module
-load time.
+Provides:
+    AccountSelector   — QComboBox subclass with built-in label→ID mapping
+    format_cents      — cents → "$1,234.56" display (inline to avoid tkinter dep)
+    build_account_choices — tree traversal for combo population (inline)
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtWidgets import QComboBox
 
-# ── Pure functions (UI-agnostic, duplicated to avoid tkinter import) ──
+
+# ── Pure functions (inlined to avoid importing tkinter-based gui package) ──
 
 
 def format_cents(cents: int | None) -> str:
@@ -53,49 +55,62 @@ def build_account_choices(
     return choices, mapping
 
 
-class AccountSelector:
-    """Stub: will be a QComboBox subclass.
+# ── Widgets ──────────────────────────────────────────────────────────────
 
-    Expected API:
-        __init__(manager, subtype_filter=None)
-        selected_id -> int | None  (property, get/set)
-        count() -> int
-        currentText() -> str
-        setCurrentIndex(index) -> None
-        setCurrentText(text) -> None
-        itemText(index) -> str
-        currentIndex() -> int
+
+class AccountSelector(QComboBox):
+    """A ``QComboBox`` pre-populated with account choices from the tree.
+
+    Provides a ``selected_id`` property that returns the account ID
+    corresponding to the currently selected item (or ``None``).
+
+    Usage::
+
+        selector = AccountSelector(manager)
+        selector.selected_id          # int | None
+        selector.selected_id = 5      # set by ID
+
+    All other ``QComboBox`` methods work as normal since this
+    is a ``QComboBox`` subclass.
     """
 
-    def __init__(self, manager: Any, subtype_filter: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        manager: Any,
+        subtype_filter: set[str] | None = None,
+        parent: QComboBox | None = None,
+        object_name: str = "",
+    ) -> None:
+        super().__init__(parent)
+        if object_name:
+            self.setObjectName(object_name)
         self._manager = manager
-        self._items: list[str] = []
         self._label_map: dict[str, int] = {}
-        self._current_idx = -1
-        raise NotImplementedError("PySide6 AccountSelector not implemented yet")
+
+        choices, self._label_map = build_account_choices(manager, subtype_filter)
+        for label in choices:
+            self.addItem(label)
+        self.setEditable(True)
+        # Start with no selection
+        self.setCurrentIndex(-1)
 
     @property
     def selected_id(self) -> int | None:
-        raise NotImplementedError
+        """The account ID matching the current selection, or None."""
+        return self._label_map.get(self.currentText().strip())
 
     @selected_id.setter
     def selected_id(self, acct_id: int | None) -> None:
-        raise NotImplementedError
+        """Set the selection by account ID (finds best match)."""
+        if acct_id is None:
+            self.setCurrentIndex(-1)
+            return
+        for label, aid in self._label_map.items():
+            if aid == acct_id:
+                self.setCurrentText(label)
+                return
+        self.setCurrentIndex(-1)
 
-    def count(self) -> int:
-        raise NotImplementedError
-
-    def currentText(self) -> str:
-        raise NotImplementedError
-
-    def setCurrentIndex(self, index: int) -> None:
-        raise NotImplementedError
-
-    def setCurrentText(self, text: str) -> None:
-        raise NotImplementedError
-
-    def itemText(self, index: int) -> str:
-        raise NotImplementedError
-
-    def currentIndex(self) -> int:
-        raise NotImplementedError
+    def label_map(self) -> dict[str, int]:
+        """Return the label→ID mapping for programmatic lookup."""
+        return self._label_map
