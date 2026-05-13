@@ -577,7 +577,9 @@ class LedgerGUI(tk.Tk):
             txn_id = int(selected[0])
         except ValueError:
             return
-        self._dialog_edit_transaction(txn_id)
+        # Defer dialog creation so the Treeview event processing finishes first
+        # — otherwise grab_set() fails with "window not viewable"
+        self.after(0, self._dialog_edit_transaction, txn_id)
 
     def _on_transaction_right_click(self, event: object) -> None:
         """Show context menu for a journal entry (Edit / Delete)."""
@@ -596,7 +598,7 @@ class LedgerGUI(tk.Tk):
         menu = tk.Menu(self, tearoff=0)
         menu.add_command(
             label="Edit Transaction",
-            command=lambda: self._dialog_edit_transaction(txn_id),
+            command=lambda: self.after(0, self._dialog_edit_transaction, txn_id),
         )
         menu.add_separator()
         menu.add_command(
