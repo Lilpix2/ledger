@@ -102,6 +102,11 @@ class AccountManager:
         is_contra: bool = False,
         account_subtype: str | None = None,
     ) -> int:
+        if not name or not name.strip():
+            raise ValueError("Account name cannot be empty")
+        name = name.strip()
+        if parent is None:
+            raise ValueError("Account parent is required")
         # Allow duplicate names under different parents (e.g. two mutual
         # funds with the same name in different brokerage accounts).
         if any(
@@ -152,14 +157,14 @@ class AccountManager:
 
     def delete_account(self, acct_id: int) -> None:
         """Remove an account. Fails if it has children."""
+        if acct_id == 0:
+            raise ValueError("Cannot delete root account")
         children = [a for a in self.accounts.values() if a.parent == acct_id]
         if children:
             raise ValueError(
                 f"Cannot delete '{self.accounts[acct_id].name}': "
                 f"has {len(children)} sub-account(s)"
             )
-        if acct_id == 0:
-            raise ValueError("Cannot delete root account")
         self.db.delete_account(acct_id)
         del self.accounts[acct_id]
 
@@ -188,6 +193,8 @@ class AccountManager:
             Transaction ID in the journal.
         """
         # ── Validation ──
+        if not description or not description.strip():
+            raise ValueError("Transaction description cannot be empty")
         total = sum(s.amount for s in splits)
         if total != 0:
             raise ValueError(
@@ -203,21 +210,24 @@ class AccountManager:
 
         # ── Persist ──
         date_str = date.strftime(DATE_STR)
-        self.db.save_transaction(date_str, description, splits)
+        db_id = self.db.save_transaction(date_str, description, splits)
 
         # ── In-memory ──
         txn = JournalTransaction(date, description, splits)
-        return self.journal.add_transaction(txn)
+        return self.journal.add_transaction(txn, db_id=db_id)
 
     def delete_transaction(self, txn_id: int) -> None:
         """Remove a journal entry and regenerate all account balances."""
+        # Look up the database journal_id before deleting from memory
+        db_id = self.journal.get_db_id(txn_id)
         self.journal.delete_transaction(txn_id)
-        self.db.delete_transaction(txn_id)
+        if db_id is not None:
+            self.db.delete_transaction(db_id)
         self.generate_ledger()
 
     # ── Ledger Generation ──────────────────────────────────────────
 
-    def generate_ledger(self):
+    def generate_ledger(self) -> None:
         """Recompute all account balances from the journal.
 
         Clears every account's ledger, then replays every transaction's
@@ -228,14 +238,17 @@ class AccountManager:
 
         for txn in self.journal.chronological():
             for s in txn.splits:
+                acct = self.accounts.get(s.account_id)
+                if acct is None:
+                    continue  # stale split for deleted account — skip
                 if s.amount > 0:
                     # Debit leg
-                    self.accounts[s.account_id].ledger.add_entry(
+                    acct.ledger.add_entry(
                         txn.date, txn.description, 0, s.amount,
                     )
                 else:
                     # Credit leg (s.amount is negative)
-                    self.accounts[s.account_id].ledger.add_entry(
+                    acct.ledger.add_entry(
                         txn.date, txn.description, -s.amount, 0,
                     )
 

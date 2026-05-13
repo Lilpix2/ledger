@@ -24,9 +24,13 @@ class DatabaseController:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def ensure_tables(self):
-        with self._connect() as conn:
-            ensure_tables(conn)
+    def ensure_tables(self) -> None:
+        """Create tables if they don't exist. Safe to call multiple times."""
+        try:
+            with self._connect() as conn:
+                ensure_tables(conn)
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to initialize database: {e}") from e
 
     def load_accounts(self) -> list[tuple[int, str, int | None, str, int, str | None]]:
         with self._connect() as conn:

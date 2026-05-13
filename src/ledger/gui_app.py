@@ -19,6 +19,8 @@ import tkinter as tk
 from tkinter import ttk
 from collections import OrderedDict
 
+from datetime import datetime
+
 from ledger.controllers.accounts import AccountManager
 from ledger.constants import DATE_STR
 
@@ -61,6 +63,8 @@ class LedgerGUI(tk.Tk):
 
         self.manager = AccountManager(db_path)
         self.manager.generate_ledger()
+
+        self._filter_account_id: int | None = None
 
         self._build_menu()
         self._build_widgets()
@@ -162,6 +166,59 @@ class LedgerGUI(tk.Tk):
         )
         ttk.Button(toolbar, text="Refresh", command=self._refresh_all).pack(
             side=tk.LEFT, padx=2,
+        )
+
+        # ── Filter bar ───────────────────────────────────────
+        filter_frame = ttk.LabelFrame(tab, text="Filters", padding=4)
+        filter_frame.pack(fill=tk.X, pady=(0, 4))
+
+        ttk.Label(filter_frame, text="🔍").pack(side=tk.LEFT, padx=(4, 0))
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(filter_frame, textvariable=self.search_var, width=20)
+        search_entry.pack(side=tk.LEFT, padx=2)
+        search_entry.bind(
+            "<KeyRelease>",
+            lambda e: self.after(300, self._apply_filters),
+        )
+
+        ttk.Label(filter_frame, text="From:").pack(side=tk.LEFT, padx=(8, 0))
+        self.date_from_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self.date_from_var, width=12).pack(
+            side=tk.LEFT, padx=2,
+        )
+
+        ttk.Label(filter_frame, text="To:").pack(side=tk.LEFT, padx=(4, 0))
+        self.date_to_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self.date_to_var, width=12).pack(
+            side=tk.LEFT, padx=2,
+        )
+
+        ttk.Label(filter_frame, text="Amt min:").pack(side=tk.LEFT, padx=(8, 0))
+        self.amt_min_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self.amt_min_var, width=10).pack(
+            side=tk.LEFT, padx=2,
+        )
+
+        ttk.Label(filter_frame, text="max:").pack(side=tk.LEFT, padx=(2, 0))
+        self.amt_max_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self.amt_max_var, width=10).pack(
+            side=tk.LEFT, padx=2,
+        )
+
+        def clear_filters() -> None:
+            self.search_var.set("")
+            self.date_from_var.set("")
+            self.date_to_var.set("")
+            self.amt_min_var.set("")
+            self.amt_max_var.set("")
+            self._filter_account_id = None
+            self._refresh_all()
+
+        ttk.Button(filter_frame, text="Clear", command=clear_filters).pack(
+            side=tk.LEFT, padx=8,
+        )
+        ttk.Button(filter_frame, text="Refresh", command=self._apply_filters).pack(
+            side=tk.LEFT, padx=(0, 4),
         )
 
         # Paned window: account tree | journal
@@ -285,8 +342,32 @@ class LedgerGUI(tk.Tk):
     #  REFRESH
     # ══════════════════════════════════════════════════════════════
 
+    def _apply_filters(self) -> None:
+        """Read filter bar values and refresh the table with them."""
+        search = self.search_var.get().strip()
+        date_from = self.date_from_var.get().strip()
+        date_to = self.date_to_var.get().strip()
+        amt_min = self.amt_min_var.get().strip()
+        amt_max = self.amt_max_var.get().strip()
+
+        self._refresh_table(
+            filter_account_id=self._filter_account_id,
+            search_text=search or None,
+            date_from=date_from or None,
+            date_to=date_to or None,
+            amount_min=int(amt_min) if amt_min else None,
+            amount_max=int(amt_max) if amt_max else None,
+        )
+
     def _refresh_all(self) -> None:
-        self.manager.generate_ledger()
+        self._filter_account_id = None
+        # Don't clear filter bar entries — user might want them to persist
+        try:
+            self.manager.generate_ledger()
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Ledger Error", f"Failed to regenerate ledger: {e}")
+            return
         self._refresh_tree()
         self._refresh_table()
         self._refresh_portfolio()
@@ -295,11 +376,18 @@ class LedgerGUI(tk.Tk):
     def _refresh_tree(self) -> None:
         tree = self.account_tree
         tree.delete(*tree.get_children())
-        tree_data = self.manager.build_tree()
+        try:
+            tree_data = self.manager.build_tree()
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", f"Failed to build account tree: {e}")
+            return
 
         def _add_children(parent_item: str, parent_id: int) -> None:
             for child_id in sorted(tree_data.get(parent_id, [])):
-                acct = self.manager.accounts[child_id]
+                acct = self.manager.accounts.get(child_id)
+                if acct is None:
+                    continue
                 bal = self.manager.get_display_balance(child_id)
                 tag = f" [{acct.account_subtype}]" if acct.account_subtype else ""
                 item = tree.insert(
@@ -313,34 +401,82 @@ class LedgerGUI(tk.Tk):
 
         _add_children("", 0)
 
-    def _refresh_table(self, filter_account_id: int | None = None) -> None:
-        """Rebuild the journal table, optionally filtered by account ID."""
+    def _refresh_table(
+        self,
+        filter_account_id: int | None = None,
+        search_text: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        amount_min: int | None = None,
+        amount_max: int | None = None,
+    ) -> None:
+        """Rebuild the journal table, optionally filtered.
+
+        Filters compose as AND — a transaction must match ALL provided
+        criteria to appear in the table.
+
+        Args:
+            filter_account_id: Only show transactions touching this account.
+            search_text: Case-insensitive substring match on description.
+            date_from: Show transactions on or after this date ("YYYY-MM-DD").
+            date_to: Show transactions on or before this date.
+            amount_min: Minimum total amount in cents.
+            amount_max: Maximum total amount in cents.
+        """
         table = self.transaction_table
         table.delete(*table.get_children())
 
         if filter_account_id:
-            ids = self.manager.get_descendant_ids(filter_account_id)
+            acct_ids = self.manager.get_descendant_ids(filter_account_id)
         else:
-            ids = set(self.manager.accounts.keys())
+            acct_ids = set(self.manager.accounts.keys())
 
-        for txn_id in sorted(self.manager.journal.transactions.keys()):
-            txn = self.manager.journal.transactions[txn_id]
+        # Parse date filters
+        d_from = None
+        d_to = None
+        try:
+            if date_from:
+                d_from = datetime.strptime(date_from, "%Y-%m-%d")
+            if date_to:
+                d_to = datetime.strptime(date_to, "%Y-%m-%d")
+        except ValueError:
+            # Invalid date format — silently skip date filter
+            pass
 
-            # Filter by account if needed
+        try:
+            txn_keys = sorted(self.manager.journal.transactions.keys())
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", f"Failed to load transactions: {e}")
+            return
+
+        for txn_id in txn_keys:
+            txn = self.manager.journal.transactions.get(txn_id)
+            if txn is None:
+                continue
+
+            # ── Account filter ────────────────────────────────
             if filter_account_id:
-                if not any(s.account_id in ids for s in txn.splits):
+                if not any(s.account_id in acct_ids for s in txn.splits):
                     continue
 
-            # Find the largest debit and credit for display
-            largest_debit_amt = 0
-            largest_credit_amt = 0
-            for s in txn.splits:
-                if s.amount > 0 and s.amount > largest_debit_amt:
-                    largest_debit_amt = s.amount
-                elif s.amount < 0 and abs(s.amount) > largest_credit_amt:
-                    largest_credit_amt = abs(s.amount)
+            # ── Description search ────────────────────────────
+            if search_text:
+                if search_text.lower() not in txn.description.lower():
+                    continue
 
+            # ── Date range ────────────────────────────────────
+            if d_from is not None and txn.date < d_from:
+                continue
+            if d_to is not None and txn.date > d_to:
+                continue
+
+            # ── Amount range ──────────────────────────────────
             total = sum(s.amount for s in txn.splits if s.amount > 0)
+            if amount_min is not None and total < amount_min:
+                continue
+            if amount_max is not None and total > amount_max:
+                continue
             table.insert(
                 "", tk.END,
                 values=(
@@ -356,7 +492,14 @@ class LedgerGUI(tk.Tk):
         table = self.portfolio_table
         table.delete(*table.get_children())
 
-        all_holdings = self.manager.get_all_holdings()
+        try:
+            all_holdings = self.manager.get_all_holdings()
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Error", f"Failed to load holdings: {e}")
+            self.port_summary_var.set("Error loading holdings")
+            return
+
         if not all_holdings:
             self.port_summary_var.set("No investment positions")
             return
@@ -474,12 +617,16 @@ class LedgerGUI(tk.Tk):
 
     def _refresh_status(self) -> None:
         """Update the status bar with accounting equation summary."""
-        eq = self.manager.check_accounting_equation()
-        nw = eq["net_worth"]
-        a = eq["assets"]
-        l = eq["liabilities"]
-        status = "✓" if eq["balanced"] else "✗ UNBALANCED"
-        count = len(self.manager.journal.transactions)
+        try:
+            eq = self.manager.check_accounting_equation()
+            nw = eq["net_worth"]
+            a = eq["assets"]
+            l = eq["liabilities"]
+            status = "✓" if eq["balanced"] else "✗ UNBALANCED"
+            count = len(self.manager.journal.transactions)
+        except Exception:
+            self.status_var.set("  Status unavailable — check database")
+            return
         self.status_var.set(
             f"  Assets: {format_cents(a)}  │  Liabilities: {format_cents(l)}  │  "
             f"Net Worth: {format_cents(nw)}  │  Equation: {status}  │  "
@@ -601,7 +748,8 @@ class LedgerGUI(tk.Tk):
         if selected:
             try:
                 acct_id = int(selected[0])
-                self._refresh_table(filter_account_id=acct_id)
+                self._filter_account_id = acct_id
+                self._apply_filters()
             except ValueError:
                 pass
 

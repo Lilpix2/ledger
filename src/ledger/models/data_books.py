@@ -9,16 +9,33 @@ from .data_class import JournalTransaction, LedgerEntry
 from ..constants import DATE_STR
 
 class Journal:
+    """In-memory journal of transactions.
+
+    Transactions are stored with auto-incrementing integer IDs internally.
+    The database may use different IDs — ``db_id_map`` tracks the mapping
+    so that ``delete_transaction(in_memory_id)`` can remove the right
+    row from the database.
+    """
+
     def __init__(self):
         self.transactions: dict[int, JournalTransaction] = {}
         self.sorted_ids: list[int] = []
         self.id_num = 0
+        self.db_id_map: dict[int, int] = {}  # mem_id → db_id
 
-    def add_transaction(self, txn: JournalTransaction) -> int:
-        self.transactions[self.id_num] = txn
-        self.sorted_ids.append(self.id_num)
+    def add_transaction(self, txn: JournalTransaction, db_id: int | None = None) -> int:
+        """Add a transaction and return its in-memory ID.
+
+        If ``db_id`` is provided, the mapping is stored for later
+        database-level operations (like delete).
+        """
+        mem_id = self.id_num
+        self.transactions[mem_id] = txn
+        self.sorted_ids.append(mem_id)
         self.id_num += 1
-        return self.id_num - 1
+        if db_id is not None:
+            self.db_id_map[mem_id] = db_id
+        return mem_id
 
     def delete_transaction(self, txn_id: int) -> int:
         """Remove a journal entry by ID. Returns the removed ID."""
@@ -26,7 +43,12 @@ class Journal:
             raise KeyError(f"Transaction {txn_id} not found")
         del self.transactions[txn_id]
         self.sorted_ids = [i for i in self.sorted_ids if i != txn_id]
+        self.db_id_map.pop(txn_id, None)
         return txn_id
+
+    def get_db_id(self, mem_id: int) -> int | None:
+        """Return the database journal_id for an in-memory transaction ID."""
+        return self.db_id_map.get(mem_id)
 
     def chronological(self) -> list[JournalTransaction]:
         self.sorted_ids.sort(key=lambda i: self.transactions[i].date)
