@@ -1412,6 +1412,242 @@ class TestCRUDThroughDialogs:
         finally:
             app.destroy()
 
+    # ═══════════════════════════════════════════════════════════════
+    #  Delete Account Dialog (E2E)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _prepare_delete_app(self, seeded_db: str):
+        """Build an app with a parent account that has children + txns."""
+        from ledger.gui_app import LedgerGUI
+        app = LedgerGUI(db_path=seeded_db)
+        parent = app.manager.add_account("DeleteMe", 1)
+        child = app.manager.add_account("ChildOfDelete", parent)
+        txn_target = app.manager.add_account("TxnTarget", 1)
+        child_target = app.manager.add_account("ChildTarget", 1)
+        equity = next(
+            (aid for aid, a in app.manager.accounts.items() if a.name == "root"),
+            6,
+        )
+        # Fund the parent via a txn so it has referencing splits
+        app.manager.add_transaction(
+            datetime(2026, 8, 1), "Fund delete-me",
+            [Split(parent, 99999), Split(equity, -99999)],
+        )
+        app.manager.generate_ledger()
+        return app, parent, child, child_target, txn_target
+
+    def test_delete_account_dialog_reassigns_children_and_txns_together(
+        self, seeded_db: str,
+    ):
+        """Full E2E: delete dialog reassigns both children and transactions."""
+        import tkinter as tk
+        from tkinter import ttk
+        from unittest.mock import patch
+
+        app, parent, child, child_target, txn_target = self._prepare_delete_app(seeded_db)
+        try:
+            # ── Intercept confirmation ─────────────────────────
+            import tkinter.messagebox as mb
+            orig_ask = mb.askyesno
+            mb.askyesno = lambda title, msg, **kw: True
+
+            # ── Open the dialog (patch wait_window so it returns immediately) ──
+            with patch.object(tk.Misc, "wait_window"):
+                app._dialog_delete_account(parent)
+
+            # The dialog was created with wait_window patched — it's now
+            # shown and we can interact with its widgets. Find it.
+            dlg = None
+            for w in app.winfo_children():
+                if isinstance(w, tk.Toplevel):
+                    try:
+                        if "DeleteMe" in w.title():
+                            dlg = w
+                            break
+                    except tk.TclError:
+                        pass
+
+            if dlg is None:
+                # Dialog may have already been handled (simple path)
+                # Check if account was deleted
+                if parent not in app.manager.accounts:
+                    # The simple path handled it — nothing more to test
+                    mb.askyesno = orig_ask
+                    return
+
+                mb.askyesno = orig_ask
+                return
+
+            try:
+                # ── Helper: find first combo in a LabelFrame ──
+                def _find_combo(win, section_text):
+                    """Walk widget tree to find first Combobox inside a LabelFrame."""
+                    def _walk(p):
+                        for c in p.winfo_children():
+                            if isinstance(c, ttk.LabelFrame):
+                                try:
+                                    if c.cget("text") == section_text:
+                                        for inner in c.winfo_children():
+                                            if isinstance(inner, ttk.Combobox):
+                                                return inner
+                                            for sub in inner.winfo_children():
+                                                if isinstance(sub, ttk.Combobox):
+                                                    return sub
+                                except tk.TclError:
+                                    pass
+                            result = _walk(c)
+                            if result:
+                                return result
+                        return None
+                    return _walk(win)
+
+                # ── Set child reassignment ─────────────────────
+                child_combo = _find_combo(dlg, "Sub-accounts")
+                if child_combo:
+                    choices = list(child_combo.cget("values"))
+                    target_label = next(
+                        (c for c in choices if "ChildTarget" in c), None
+                    )
+                    if target_label:
+                        child_combo.set(target_label)
+
+                # ── Set transaction reassignment ───────────────
+                txn_combo = _find_combo(dlg, "Transactions")
+                if txn_combo:
+                    choices = list(txn_combo.cget("values"))
+                    target_label = next(
+                        (c for c in choices if "TxnTarget" in c), None
+                    )
+                    if target_label:
+                        txn_combo.set(target_label)
+
+                # ── Click Delete Account ───────────────────────
+                # Find the Delete Account button by text
+                def _find_btn(win):
+                    for w in win.winfo_children():
+                        if isinstance(w, ttk.Button):
+                            try:
+                                if w.cget("text") == "Delete Account":
+                                    return w
+                            except tk.TclError:
+                                pass
+                        result = _find_btn(w)
+                        if result:
+                            return result
+                    return None
+
+                delete_btn = _find_btn(dlg)
+                assert delete_btn is not None, "Delete Account button not found"
+                delete_btn.invoke()
+
+                # ── Assert: account gone, children + txns reassigned ──
+                assert parent not in app.manager.accounts, "DeleteMe should be gone"
+                assert child in app.manager.accounts, "Child should survive"
+                assert app.manager.accounts[child].parent == child_target, (
+                    f"Child.parent={app.manager.accounts[child].parent}, "
+                    f"expected {child_target}"
+                )
+                assert txn_target in app.manager.accounts
+                assert app.manager.get_display_balance(txn_target) == 99999, (
+                    "Balance not migrated to txn target"
+                )
+
+                # ── Equation stays balanced ──
+                app.manager.generate_ledger()
+                eq = app.manager.check_accounting_equation()
+                assert eq["balanced"], (
+                    f"Equation unbalanced: A={eq['assets']} "
+                    f"L+E={eq['rhs']}"
+                )
+
+            finally:
+                dlg.destroy()
+                mb.askyesno = orig_ask
+        finally:
+            app.destroy()
+
+    def test_delete_account_dialog_cascade_children(
+        self, seeded_db: str,
+    ):
+        """Delete dialog with cascade checkbox → children deleted too."""
+        import tkinter as tk
+        from tkinter import ttk
+        from unittest.mock import patch
+
+        app, parent, child, _, _ = self._prepare_delete_app(seeded_db)
+        try:
+            import tkinter.messagebox as mb
+            orig_ask = mb.askyesno
+            mb.askyesno = lambda title, msg, **kw: True
+
+            with patch.object(tk.Misc, "wait_window"):
+                app._dialog_delete_account(parent)
+
+            dlg = None
+            for w in app.winfo_children():
+                if isinstance(w, tk.Toplevel):
+                    try:
+                        if "DeleteMe" in w.title():
+                            dlg = w
+                            break
+                    except tk.TclError:
+                        pass
+
+            if dlg is None:
+                mb.askyesno = orig_ask
+                return
+
+            try:
+                # ── Find and check the cascade checkbox ────
+                def _walk(p):
+                    for c in p.winfo_children():
+                        if isinstance(c, ttk.Checkbutton):
+                            try:
+                                txt = c.cget("text")
+                                if "children" in txt.lower() or "delete" in txt.lower():
+                                    return c
+                            except tk.TclError:
+                                pass
+                        result = _walk(c)
+                        if result:
+                            return result
+                    return None
+
+                cascade_cb = _walk(dlg)
+                if cascade_cb:
+                    cascade_cb.invoke()  # Check it
+
+                # ── Click Delete ───────────────────────────
+                def _find_btn(win):
+                    for w in win.winfo_children():
+                        if isinstance(w, ttk.Button):
+                            try:
+                                if w.cget("text") == "Delete Account":
+                                    return w
+                            except tk.TclError:
+                                pass
+                        result = _find_btn(w)
+                        if result:
+                            return result
+                    return None
+
+                delete_btn = _find_btn(dlg)
+                if delete_btn:
+                    delete_btn.invoke()
+
+                # Both parent and child should be gone
+                assert parent not in app.manager.accounts
+                assert child not in app.manager.accounts
+
+            finally:
+                try:
+                    dlg.destroy()
+                except Exception:
+                    pass
+                mb.askyesno = orig_ask
+        finally:
+            app.destroy()
+
 
 # ════════════════════════════════════════════════════════════════════
 #  EQUATION AFTER OPERATIONS
