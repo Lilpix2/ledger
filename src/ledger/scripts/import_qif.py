@@ -97,19 +97,39 @@ def _import_bank(mgr: AccountManager, records: list,
     Each record becomes a simple 2-split transaction. Category
     lines are parsed into ledger account paths.
     """
-    # Build income/expense accounts from categories seen
-    cat_accounts: dict[str, int] = {}
+    # Build category → (account_id, is_income) mapping
+    cat_info: dict[str, tuple[int, bool]] = {}
     parent_assets = 1
     parent_income = 4
     parent_expenses = 5
 
+    def _classify(cat: str) -> tuple[int, bool]:
+        """Return (account_id, is_income) for a category string."""
+        if cat.startswith("["):
+            aid = _ensure_named_asset(mgr, cat.strip("[]"))
+            return (aid, False)
+        lower = cat.lower()
+        if "income" in lower:
+            aid = _ensure_income(mgr, cat)
+            return (aid, True)
+        elif "expense" in lower:
+            aid = _ensure_expense(mgr, cat)
+            return (aid, False)
+        elif ":" in cat:
+            parts = cat.split(":")
+            if any("income" in p.lower() for p in parts):
+                aid = _find_or_create(mgr, cat, parent_income, "INCOME")
+                return (aid, True)
+            aid = _find_or_create(mgr, cat, parent_expenses, "EXPENSE")
+            return (aid, False)
+        else:
+            # Assume expense for single-word categories
+            aid = _find_or_create(mgr, cat, parent_expenses, "EXPENSE")
+            return (aid, False)
+
     for r in records:
-        if not r.category:
-            continue
-        cat = r.category
-        if cat not in cat_accounts:
-            cat_accounts[cat] = _ensure_category(mgr, cat, parent_income,
-                                                  parent_expenses, parent_assets)
+        if r.category and r.category not in cat_info:
+            cat_info[r.category] = _classify(r.category)
 
     for r in records:
         if not r.amount:
@@ -125,69 +145,54 @@ def _import_bank(mgr: AccountManager, records: list,
         except ValueError:
             continue
 
-        # Determine the account pair
         cat = r.category or ""
+        is_income = cat_info.get(cat, (0, False))[1] if cat in cat_info else False
+        target = cat_info.get(cat, (0, False))[0] if cat in cat_info else 1
+
         if cat.startswith("["):
-            # Transfer to/from another account (e.g. [Alex College XX3233])
-            acct_name = cat.strip("[]")
-            target = _ensure_named_asset(mgr, acct_name)
+            # Transfer to/from another account
+            acct_id = target
             if amt_cents > 0:
-                # Money in — DR target, CR income
+                # Money in — DR asset, CR income
                 mgr.add_transaction(dt, r.payee or "Transfer",
-                    [Split(target, amt_cents),
-                     Split(cat_accounts.get("Income:Transfer",
-                            _ensure_income(mgr, "Income:Transfer")), -amt_cents)])
+                    [Split(acct_id, amt_cents),
+                     Split(cat_info.get("Income:Transfer",
+                            (_ensure_income(mgr, "Income:Transfer"), True))[0], -amt_cents)])
             else:
-                # Money out — DR expense, CR target
+                # Money out — DR expense, CR asset
+                out = abs(amt_cents)
                 mgr.add_transaction(dt, r.payee or "Transfer",
-                    [Split(cat_accounts.get("Expenses:Transfers",
-                            _ensure_expense(mgr, "Expenses:Transfers")), abs(amt_cents)),
-                     Split(target, amt_cents)])
+                    [Split(cat_info.get("Expenses:Transfers",
+                            (_ensure_expense(mgr, "Expenses:Transfers"), False))[0], out),
+                     Split(acct_id, amt_cents)])
             summary["entries_created"] += 1
         elif amt_cents > 0:
             # Income: DR asset, CR income category
-            inc_acct = cat_accounts.get(cat, _ensure_income(mgr, "Income:Misc"))
+            inc_acct = target
             mgr.add_transaction(dt, r.payee or "Income",
                 [Split(1, amt_cents), Split(inc_acct, -amt_cents)])
+            summary["entries_created"] += 1
+        elif amt_cents < 0 and is_income:
+            # Negative amount with income category: DR income, CR asset
+            out = abs(amt_cents)
+            inc_acct = target
+            mgr.add_transaction(dt, r.payee or "Income Reduction",
+                [Split(inc_acct, out), Split(1, -out)])
             summary["entries_created"] += 1
         else:
             # Expense: DR expense category, CR asset
             out = abs(amt_cents)
-            exp_acct = cat_accounts.get(cat, _ensure_expense(mgr, "Expenses:Misc"))
+            exp_acct = target
             mgr.add_transaction(dt, r.payee or "Expense",
                 [Split(exp_acct, out), Split(1, -out)])
             summary["entries_created"] += 1
 
 
-def _ensure_category(mgr: AccountManager, cat: str,
-                     parent_income: int, parent_exp: int,
-                     parent_assets: int) -> int:
-    """Find or create an account for a category path like "Kids:Income/Alex"."""
-    if cat.startswith("["):
-        parts = cat.strip("[]").split(":")
-        parent = parent_assets
-        for p in parts:
-            aid = _find_or_create(mgr, p.strip(), parent, "ASSET")
-            parent = aid
-        return parent
-    if ":" in cat:
-        parts = cat.split(":")
-        # Check if first token is asset/income/expense-like
-        first = parts[0].lower()
-        if first in ("kids", "assets", "receivables"):
-            parent = parent_assets
-            acct_type = "ASSET"
-        elif first in ("income",):
-            parent = parent_income
-            acct_type = "INCOME"
-        else:
-            parent = parent_exp
-            acct_type = "EXPENSE"
-        for p in parts:
-            aid = _find_or_create(mgr, p.strip(), parent, acct_type)
-            parent = aid
-        return parent
-    return _find_or_create(mgr, cat, parent_exp, "EXPENSE")
+def _ensure_income_or_expense(mgr: AccountManager, name: str) -> int:
+    """Create an account under Income or Expense based on the name."""
+    if "income" in name.lower():
+        return _find_or_create(mgr, name, 4, "INCOME")
+    return _find_or_create(mgr, name, 5, "EXPENSE")
 
 
 def _ensure_named_asset(mgr: AccountManager, name: str) -> int:
