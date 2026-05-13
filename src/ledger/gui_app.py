@@ -346,7 +346,9 @@ class LedgerGUI(tk.Tk):
                 values=(
                     txn.date.strftime(DATE_STR),
                     txn.description,
-                    total,
+                    "",  # debit_acct (hidden)
+                    "",  # credit_acct (hidden)
+                    total,  # amount
                 ),
                 iid=str(txn_id),
             )
