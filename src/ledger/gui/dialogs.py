@@ -179,8 +179,8 @@ class AccountDialog:
                     self.manager.add_account(name, pid, acct_type, account_subtype=subtype)
                 self.on_success()
                 dialog.destroy()
-            except ValueError as e:
-                messagebox.showerror("Error", str(e), parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Error", f"{type(e).__name__}: {e}", parent=dialog)
 
         ttk.Button(btn_frame, text="Save" if is_edit else "Create", command=_submit).pack(
             side=tk.LEFT, padx=4,

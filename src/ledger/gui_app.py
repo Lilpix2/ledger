@@ -499,10 +499,10 @@ class LedgerGUI(tk.Tk):
             from tkinter import messagebox
             messagebox.showerror("Error", f"Account #{acct_id} not found")
             return
-        self.after(0, lambda: AccountDialog(
+        AccountDialog(
             self, self.manager, self._refresh_all,
             edit_acct=acct, edit_acct_id=acct_id,
-        ))
+        )
 
     def _dialog_delete_account(self, acct_id: int) -> None:
         from tkinter import messagebox
