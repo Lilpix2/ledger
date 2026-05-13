@@ -1,20 +1,134 @@
 """Shared test fixtures for the ledger test suite.
 
-Performance note: each test creates its own SQLite DB (~3s overhead per test).
-Run a subset with -k to target specific tests quickly.
+Performance note: ``seeded_manager`` creates a real SQLite DB (~3s overhead).
+Use ``fast_manager`` for pure unit tests (no disk I/O, milliseconds).
 """
 
 import tempfile
 import os
 from datetime import datetime
+from typing import Any
 
 import pytest
 
 from ledger.controllers.accounts import AccountManager
-from ledger.models.data_class import Split
+from ledger.models.data_class import Split, JournalTransaction, Holding, Price
 
 
-# ── Per-function fixtures (clean DB every time) ─────────────────────
+# ── Mock DatabaseController (zero disk I/O) ────────────────────
+
+
+class MockDB:
+    """In-memory database mock — no disk I/O, sub-millisecond operations."""
+
+    def __init__(self, db_path: str = "") -> None:
+        self._accounts: dict[int, tuple[str, int | None, str, int, str | None]] = {}
+        self._txns: list[tuple[str, str, list[Split]]] = []
+        self._holdings: dict[int, dict[str, tuple[float, int]]] = {}
+        self._prices: list[tuple[str, str, int]] = []
+        self._next_id = 1
+
+    def ensure_tables(self) -> None:
+        pass
+
+    def load_accounts(self) -> list[tuple[int, str, int | None, str, int, str | None]]:
+        return []
+
+    def load_transactions(self) -> list[JournalTransaction]:
+        return []
+
+    def load_holdings(self, account_id: int | None = None) -> list[Holding]:
+        return []
+
+    def load_prices(self, ticker: str | None = None) -> list[Price]:
+        return []
+
+    def save_account(
+        self, name: str, parent_id: int | None = None,
+        acct_type: str = "ASSET", is_contra: bool = False,
+        account_subtype: str | None = None,
+    ) -> int:
+        aid = self._next_id
+        self._next_id += 1
+        self._accounts[aid] = (name, parent_id, acct_type, 1 if is_contra else 0, account_subtype)
+        return aid
+
+    def update_account(
+        self, acct_id: int, name: str,
+        parent_id: int | None = None,
+        acct_type: str | None = None,
+        account_subtype: str | None = None,
+    ) -> None:
+        self._accounts[acct_id] = (name, parent_id, acct_type, 0, account_subtype)
+
+    def delete_account(self, acct_id: int) -> None:
+        self._accounts.pop(acct_id, None)
+
+    def save_transaction(
+        self, date: str, description: str, splits: list[Split]
+    ) -> int:
+        tid = self._next_id
+        self._next_id += 1
+        self._txns.append((date, description, splits))
+        return tid
+
+    def delete_transaction(self, txn_id: int) -> None:
+        pass
+
+    def _wipe_splits_for_account(self, acct_id: int) -> None:
+        pass
+
+    def save_holding(self, holding: Holding) -> None:
+        pass
+
+    def delete_holding(self, account_id: int, ticker: str) -> None:
+        pass
+
+    def save_price(self, price: Price) -> None:
+        pass
+
+    def bulk_save_prices(self, prices: list[tuple[str, str, int]]) -> None:
+        pass
+
+
+@pytest.fixture
+def fast_manager() -> AccountManager:
+    """AccountManager with a mock DB — no disk I/O, runs in <1ms."""
+    mgr = AccountManager(db=MockDB())
+    yield mgr
+
+
+@pytest.fixture
+def fast_seeded() -> AccountManager:
+    """Fast seeded manager with mock DB — income + expense + investment."""
+    mgr = AccountManager(db=MockDB())
+    mgr.add_account("HS Checking", 1, account_subtype="checking")
+    mgr.add_account("Savings", 1)
+    mgr.add_account("Schwab Brokerage", 1, account_subtype="brokerage")
+    mgr.add_account("Discover", 2, account_subtype="credit_card")
+    mgr.add_account("Wages", 4)
+    mgr.add_account("Groceries", 5)
+
+    ids = {a.name: aid for aid, a in mgr.accounts.items() if aid}
+
+    mgr.add_transaction(
+        datetime(2026, 1, 1), "Opening",
+        [Split(ids["HS Checking"], 5000000),
+         Split(ids["Savings"], 1000000),
+         Split(ids["Schwab Brokerage"], 2000000),
+         Split(ids["Discover"], -530000),
+         Split(6, -7470000)],
+    )
+    mgr.add_transaction(
+        datetime(2026, 6, 1), "Payday",
+        [Split(ids["Wages"], -300000), Split(ids["HS Checking"], 300000)],
+    )
+    mgr.add_transaction(
+        datetime(2026, 6, 2), "Groceries",
+        [Split(ids["Groceries"], 4500), Split(ids["HS Checking"], -4500)],
+    )
+    mgr.generate_ledger()
+    yield mgr
 
 
 @pytest.fixture

@@ -48,10 +48,10 @@ class Account:
 
 class AccountManager:
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, db: DatabaseController | None = None):
         self.journal = Journal()
         self.accounts: dict[int, Account] = {0: Account("root")}
-        self.db = DatabaseController(db_path)
+        self.db = db if db is not None else DatabaseController(db_path)
         self.db.ensure_tables()
         self._load_state()
 
