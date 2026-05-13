@@ -30,7 +30,8 @@ def format_cents(cents: int | None) -> str:
     """
     if cents is None:
         return "—"
-    return f"${cents/100:,.2f}"
+    sign = "-" if cents < 0 else ""
+    return f"{sign}${abs(cents)/100:,.2f}"
 
 
 def build_account_choices(
