@@ -664,29 +664,27 @@ class AccountManager:
         income_by_acct: dict[int, int] = {}
         expense_by_acct: dict[int, int] = {}
 
-        # Without date filters: use account balances (matches tree, no double-counting
-        # from debit splits on credit-normal income accounts).
-        # Use leaf accounts only to avoid counting parent + children.
-        tree = self.build_tree()
-        leaf_ids = set()
-        for pid, children in tree.items():
-            for cid in children:
-                if cid not in tree:
-                    leaf_ids.add(cid)
-
+        # Without date filters: use direct account balances (not aggregated),
+        # so parent accounts with direct income/expense splits are included
+        # even if they have children — no double-counting since each account
+        # tracks only its own splits.
         if not start_date and not end_date:
             for aid in sorted(income_ids):
-                if aid not in leaf_ids:
-                    continue
                 if aid in self.accounts:
-                    bal = self.get_display_balance(aid)
+                    raw = self.accounts[aid].get_balance()
+                    if self.is_debit_normal(aid):
+                        bal = raw
+                    else:
+                        bal = -raw
                     if bal != 0:
                         income_by_acct[aid] = bal
             for aid in sorted(expense_ids):
-                if aid not in leaf_ids:
-                    continue
                 if aid in self.accounts:
-                    bal = self.get_display_balance(aid)
+                    raw = self.accounts[aid].get_balance()
+                    if self.is_debit_normal(aid):
+                        bal = raw
+                    else:
+                        bal = -raw
                     if bal != 0:
                         expense_by_acct[aid] = bal
         else:
