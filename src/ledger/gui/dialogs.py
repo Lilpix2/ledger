@@ -595,7 +595,7 @@ class BuySellDialog:
         gains_label = ttk.Label(gains_frame, text="Gains Account (optional):")
         gains_var = tk.StringVar()
 
-        gain_choices, gain_map = build_account_choices(manager)
+        gain_choices, gain_map = build_account_choices(self.manager)
         gains_combo = ttk.Combobox(
             gains_frame, textvariable=gains_var,
             values=gain_choices, width=50, state="normal",
