@@ -4,6 +4,7 @@ import pytest
 from datetime import datetime
 
 from ledger.controllers.accounts import AccountManager
+from ledger.models.data_class import Split
 
 
 class TestAccountCreation:
@@ -144,3 +145,149 @@ class TestFinancialReports:
         assert summary["balanced"] is True
         assert summary["net_worth"] >= 0
         assert len(summary["groups"]) == 5  # Asset, Liability, Equity, Income, Expense
+
+    # ── Balance sheet with live income (pre-close) ────────────
+
+    def test_balance_sheet_balanced_with_live_income(self, seeded_manager: AccountManager):
+        """Pre-close: net income appears in equity and balance sheet balances."""
+        ids = seeded_manager.account_ids
+        # Add income & expense transactions without closing
+        seeded_manager.add_transaction(
+            datetime(2026, 6, 1), "Paycheck",
+            [Split(ids["HS Checking"], 300000), Split(ids.get("Wages", 4), -300000)],
+        )
+        seeded_manager.add_transaction(
+            datetime(2026, 6, 2), "Groceries",
+            [Split(ids.get("Groceries", 5), 5000), Split(ids["HS Checking"], -5000)],
+        )
+        seeded_manager.generate_ledger()
+
+        bs = seeded_manager.gen_balance_sheet()
+        assert bs["balanced"] is True, (
+            f"Balance sheet must balance with live income. "
+            f"A={bs['total_assets']} L={bs['total_liabilities']} E={bs['total_equity']}"
+        )
+        # Equity should include a net income entry
+        equity_names = [n for n, _ in bs["equity"]]
+        assert any("net income" in n.lower() for n in equity_names), (
+            f"Expected 'net income' in equity, got {equity_names}"
+        )
+
+    # ── RE statement doesn't double-count post-close ─────────
+
+    def test_re_statement_no_double_count_after_close(self, seeded_manager: AccountManager):
+        """Post-close: RE statement should not inflate by adding NI twice.
+
+        After close_temps(), income/expense are zeroed and NI is in RE.
+        The RE statement must detect this and set NI = 0.
+        """
+        re_before = -seeded_manager.accounts[6].get_balance()
+
+        seeded_manager.close_temps()
+        seeded_manager.generate_ledger()
+
+        re_after = -seeded_manager.accounts[6].get_balance()
+        re_stmt = seeded_manager.gen_retained_earnings_statement()
+
+        # RE ending from statement should not exceed actual ledger RE
+        assert re_stmt["ending_re"] <= re_after, (
+            f"RE statement ending ({re_stmt['ending_re']}) exceeds "
+            f"actual ledger RE ({re_after})"
+        )
+        # NI should be zero since income accounts are closed
+        assert re_stmt["net_income"] == 0, (
+            f"Expected NI=0 post-close, got {re_stmt['net_income']}"
+        )
+
+    def test_re_statement_normal_before_close(self, seeded_manager: AccountManager):
+        """Pre-close: RE statement reports NI normally."""
+        # Add some income first
+        ids = seeded_manager.account_ids
+        seeded_manager.add_transaction(
+            datetime(2026, 6, 1), "Paycheck",
+            [Split(ids["HS Checking"], 300000), Split(ids.get("Wages", 4), -300000)],
+        )
+        seeded_manager.generate_ledger()
+
+        re_stmt = seeded_manager.gen_retained_earnings_statement()
+        # NI should be non-zero since income accounts are live
+        assert re_stmt["net_income"] > 0, (
+            f"Expected NI > 0 pre-close, got {re_stmt['net_income']}"
+        )
+        ending = re_stmt["beginning_re"] + re_stmt["net_income"] - re_stmt["dividends"]
+        assert ending == re_stmt["ending_re"], (
+            f"RE equation doesn't hold: {re_stmt['beginning_re']} + "
+            f"{re_stmt['net_income']} - {re_stmt['dividends']} != {re_stmt['ending_re']}"
+        )
+
+    # ── Balance sheet shows non-leaf accounts with direct balances ──
+
+    def test_balance_sheet_shows_non_leaf_direct_balance(self, seeded_manager: AccountManager):
+        """Accounts in the middle of the tree appear if they have direct splits.
+
+        Generate a transaction against 'cash' (a parent of checking/savings)
+        and verify it shows up on the balance sheet.
+        """
+        ids = seeded_manager.account_ids
+        # Cash is id=7 (under Assets, may have children in some trees)
+        # Add a direct transaction to cash
+        cash_id = 7  # parent of checking/savings
+        seeded_manager.add_transaction(
+            datetime(2026, 6, 1), "Cash deposit",
+            [Split(cash_id, 50000), Split(ids["HS Checking"], -50000)],
+        )
+        seeded_manager.generate_ledger()
+
+        bs = seeded_manager.gen_balance_sheet()
+        asset_names = [n for n, _ in bs["assets"]]
+        assert "cash" in [n.lower() for n in asset_names], (
+            f"Expected 'cash' (non-leaf) on balance sheet, got {asset_names}"
+        )
+        assert bs["balanced"] is True, (
+            f"Balance sheet must still balance with direct non-leaf txn. "
+            f"A={bs['total_assets']} L+E={bs['total_liabilities_equity']}"
+        )
+
+    # ── Full cycle: pre-close balances → close → post-close balances ──
+
+    def test_balance_sheet_full_cycle(self, seeded_manager: AccountManager):
+        """Balance sheet balances before close, after close, and RE doesn't inflate."""
+        ids = seeded_manager.account_ids
+
+        # Add income
+        seeded_manager.add_transaction(
+            datetime(2026, 6, 1), "Paycheck",
+            [Split(ids["HS Checking"], 300000), Split(ids.get("Wages", 4), -300000)],
+        )
+        seeded_manager.add_transaction(
+            datetime(2026, 6, 2), "Rent",
+            [Split(ids.get("Rent", 5), 150000), Split(ids["HS Checking"], -150000)],
+        )
+        seeded_manager.generate_ledger()
+
+        # Pre-close: balanced with NI in equity
+        bs_pre = seeded_manager.gen_balance_sheet()
+        assert bs_pre["balanced"], f"Pre-close unbalanced: {bs_pre}"
+
+        re_pre = seeded_manager.gen_retained_earnings_statement()
+        assert re_pre["net_income"] > 0, "Pre-close NI should be positive"
+
+        # Close
+        seeded_manager.close_temps()
+        seeded_manager.generate_ledger()
+
+        bs_post = seeded_manager.gen_balance_sheet()
+        assert bs_post["balanced"], \
+            f"Post-close unbalanced: A={bs_post['total_assets']} L+E={bs_post['total_liabilities_equity']}"
+
+        re_post = seeded_manager.gen_retained_earnings_statement()
+        assert re_post["net_income"] == 0, \
+            f"Post-close NI should be 0, got {re_post['net_income']}"
+
+        # Close AGAIN — should be a no-op
+        re_before_2nd_close = -seeded_manager.accounts[6].get_balance()
+        seeded_manager.close_temps()
+        seeded_manager.generate_ledger()
+        re_after_2nd_close = -seeded_manager.accounts[6].get_balance()
+        assert re_after_2nd_close == re_before_2nd_close, \
+            f"Second close changed RE: {re_before_2nd_close} → {re_after_2nd_close}"
