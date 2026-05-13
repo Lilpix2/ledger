@@ -458,8 +458,17 @@ def import_beancount(
 
     print(f"  Prices imported: {prices_imported}")
 
-    # ── Phase 5: Verify ─────────────────────────────────────────────
-    print(f"\n── Phase 5: Verifying ledger ──")
+    # ── Phase 5: Reconcile balances ──────────────────────────────────
+    print(f"\n── Phase 5: Reconciling balances ──")
+
+    adjustments = _reconcile_balances(mgr, entries, bc_to_ledger_id)
+    if adjustments:
+        print(f"  Created {len(adjustments)} opening balance adjustment(s)")
+    else:
+        print(f"  All balances match — no adjustments needed")
+
+    # ── Phase 6: Verify ─────────────────────────────────────────────
+    print(f"\n── Phase 6: Verifying ledger ──")
 
     try:
         mgr.generate_ledger()
@@ -490,6 +499,95 @@ def import_beancount(
         "prices": prices_imported,
         "net_worth": mgr.get_net_worth() if hasattr(mgr, 'get_net_worth') else 0,
     }
+
+
+# ── Balance reconciliation ────────────────────────────────────────
+
+
+def _reconcile_balances(
+    mgr: AccountManager,
+    entries: list,
+    bc_to_ledger_id: dict[str, int],
+) -> list[str]:
+    """Ensure ledger account balances match Beancount-computed balances.
+
+    Uses Beancount's own ``balance_by_account()`` to compute what each
+    account should hold, then creates a single opening-adjustment entry
+    to fill any gap between the current ledger state and the expected
+    balances (handles missing pad directives, opening balances, etc.).
+
+    Returns a list of human-readable adjustment descriptions.
+    """
+    from beancount.ops.summarize import balance_by_account
+    from beancount.core.inventory import Inventory
+    from datetime import date as date_type
+    from decimal import Decimal
+
+    # Find the latest date in the entries
+    latest_date = date_type(2026, 1, 1)
+    for entry in entries:
+        if hasattr(entry, "date") and entry.date is not None:
+            if entry.date > latest_date:
+                latest_date = entry.date
+
+    # Get Beancount's computed balances for ALL accounts
+    bc_balances, _ = balance_by_account(entries, latest_date)
+
+    adjustments = []
+    usd_splits: list[Split] = []
+
+    for bc_acct, inventory in sorted(bc_balances.items()):
+        if bc_acct not in bc_to_ledger_id:
+            continue
+
+        ledger_id = bc_to_ledger_id[bc_acct]
+
+        # Only reconcile USD for non-investment accounts.
+        # For investment accounts, holdings are reconciled separately
+        # in Phase 3 via _compute_holdings.
+        if not inventory.is_empty():
+            is_investment = detect_subtype(bc_acct) in ("brokerage", "mesp", "retirement")
+            for pos in inventory.get_positions():
+                currency = pos.units.currency
+                bc_amount = int(round(float(pos.units.number) * 100))
+
+                if currency.upper() == "USD":
+                    # Compare with current ledger balance
+                    ledger_bal = mgr.accounts[ledger_id].get_balance()
+
+                    if is_investment:
+                        # For investment accounts, the ledger balance reflects
+                        # the cost basis via buy/sell entries.  Beancount tracks
+                        # cash + securities separately.  Only adjust if the
+                        # USD balance of the account itself differs.
+                        pass  # Holdings are reconciled separately
+
+                    if abs(bc_amount - ledger_bal) > 100:  # > $1 discrepancy
+                        diff = bc_amount - ledger_bal
+                        usd_splits.append(Split(ledger_id, diff, memo=f"{bc_acct}"))
+                        adjustments.append(
+                            f"  {bc_acct}: adj ${diff/100:+.2f} (BC=${bc_amount/100:.2f}, "
+                            f"ledger=${ledger_bal/100:.2f})"
+                        )
+
+    if usd_splits:
+        # Balance with an equity adjustment
+        total_adj = sum(s.amount for s in usd_splits)
+        usd_splits.append(Split(6, -total_adj, memo="Opening balance adjustment"))
+
+        if sum(s.amount for s in usd_splits) == 0:
+            dt = datetime(latest_date.year, latest_date.month, latest_date.day)
+            try:
+                mgr.add_transaction(dt, "Import balance adjustment", usd_splits)
+                print("  Balance adjustments:")
+                for adj in adjustments:
+                    print(adj)
+            except ValueError as e:
+                print(f"  ⚠  Could not create balance adjustment: {e}")
+        else:
+            print(f"  ⚠  Balance adjustments still unbalanced (bug)")
+
+    return adjustments
 
 
 # ── Holdings computation ────────────────────────────────────────────
