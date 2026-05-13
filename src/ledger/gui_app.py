@@ -37,8 +37,8 @@ class LedgerGUI(tk.Tk):
     def __init__(self, db_path: str = DEFAULT_DB):
         super().__init__()
         self.title("Ledger — Double-Entry Accounting")
-        self.geometry("1200x700")
-        self.minsize(800, 500)
+        self.geometry("1400x800")
+        self.minsize(1000, 600)
 
         self.manager = AccountManager(db_path)
         self.manager.generate_ledger()
@@ -176,24 +176,29 @@ class LedgerGUI(tk.Tk):
         txn_scroll_y = ttk.Scrollbar(table_frame, orient=tk.VERTICAL)
         txn_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
 
+        txn_scroll_x = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL)
+        txn_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+
         self.transaction_table = ttk.Treeview(
             table_frame,
             columns=("date", "desc", "debit_acct", "credit_acct", "amount"),
             displaycolumns=("date", "desc", "amount"),
             yscrollcommand=txn_scroll_y.set,
+            xscrollcommand=txn_scroll_x.set,
             selectmode="browse",
             height=20,
         )
         txn_scroll_y.config(command=self.transaction_table.yview)
+        txn_scroll_x.config(command=self.transaction_table.xview)
 
-        self.transaction_table.heading("#0", text="ID", anchor=tk.W)
+        self.transaction_table.heading("#0", text="", anchor=tk.W)
         self.transaction_table.heading("date", text="Date", anchor=tk.W)
         self.transaction_table.heading("desc", text="Description", anchor=tk.W)
         self.transaction_table.heading("amount", text="Amount", anchor=tk.E)
 
-        self.transaction_table.column("#0", width=40, minwidth=30)
-        self.transaction_table.column("date", width=140, minwidth=100)
-        self.transaction_table.column("desc", width=300, minwidth=150)
+        self.transaction_table.column("#0", width=0, minwidth=0, stretch=False)
+        self.transaction_table.column("date", width=120, minwidth=90)
+        self.transaction_table.column("desc", width=350, minwidth=150, stretch=True)
         self.transaction_table.column("amount", width=100, anchor=tk.E, minwidth=70)
 
         self.transaction_table.pack(fill=tk.BOTH, expand=True)
@@ -320,7 +325,6 @@ class LedgerGUI(tk.Tk):
             total = sum(s.amount for s in txn.splits if s.amount > 0)
             table.insert(
                 "", tk.END,
-                text=str(txn_id),
                 values=(
                     txn.date.strftime(DATE_STR),
                     txn.description,
@@ -497,16 +501,15 @@ class LedgerGUI(tk.Tk):
                         continue
 
                 prefix = "  " * depth
-                label = f"{prefix}{cid:3d}: {acct.name} ({acct.acct_type})"
+                label = f"{prefix}{acct.name} ({acct.acct_type})"
                 if acct.account_subtype:
                     label += f" [{acct.account_subtype}]"
                 choices.append(label)
                 mapping[label.strip()] = cid
-                # Also map just the full ID part for easy lookup
-                mapping[str(cid)] = cid
                 _walk(cid, depth + 1)
 
         _walk(0)
+        self._last_acct_map = mapping
         return choices, mapping
 
     def _parse_acct_id(self, raw: str) -> int | None:
@@ -515,10 +518,9 @@ class LedgerGUI(tk.Tk):
             return None
         if raw.strip().isdigit():
             return int(raw)
-        try:
-            return int(raw.split(":")[0].strip())
-        except (ValueError, IndexError):
-            pass
+        # Try lookup against last-built account map
+        if hasattr(self, '_last_acct_map'):
+            return self._last_acct_map.get(raw.strip())
         return None
 
     # ══════════════════════════════════════════════════════════════
@@ -769,7 +771,7 @@ class LedgerGUI(tk.Tk):
         # ── Account dropdown ─────────────────────────────────────
         ttk.Label(add_frame, text="Account:").grid(row=0, column=0, padx=2)
         split_acct_var = tk.StringVar()
-        split_acct_choices, _ = self._build_account_choices()
+        split_acct_choices, split_acct_map = self._build_account_choices()
         split_acct_combo = ttk.Combobox(
             add_frame, textvariable=split_acct_var,
             values=split_acct_choices,
@@ -792,12 +794,9 @@ class LedgerGUI(tk.Tk):
 
         # Auto-tick D/C based on account type
         def _on_acct_select(*args):
-            raw = split_acct_var.get()
-            if ":" not in raw:
-                return
-            try:
-                acct_id = int(raw.split(":")[0].strip())
-            except ValueError:
+            raw = split_acct_var.get().strip()
+            acct_id = split_acct_map.get(raw)
+            if acct_id is None:
                 return
             acct = self.manager.accounts.get(acct_id)
             if acct:
@@ -805,10 +804,9 @@ class LedgerGUI(tk.Tk):
         split_acct_var.trace("w", _on_acct_select)
 
         def add_split():
-            raw = split_acct_var.get()
-            try:
-                acct_id = int(raw.split(":")[0].strip())
-            except (ValueError, IndexError):
+            raw = split_acct_var.get().strip()
+            acct_id = split_acct_map.get(raw)
+            if acct_id is None:
                 messagebox.showerror("Error", "Select a valid account from the dropdown", parent=dialog)
                 return
             if acct_id not in self.manager.accounts:
@@ -825,9 +823,13 @@ class LedgerGUI(tk.Tk):
 
             memo = split_memo_var.get()
             if is_debit_var.get():
-                split_tree.insert("", tk.END, values=(acct_id, amt, "", memo))
+                acct = self.manager.accounts.get(acct_id)
+                acct_name = acct.name if acct else f"ID {acct_id}"
+                split_tree.insert("", tk.END, values=(acct_name, amt, "", memo))
             else:
-                split_tree.insert("", tk.END, values=(acct_id, "", amt, memo))
+                acct = self.manager.accounts.get(acct_id)
+                acct_name = acct.name if acct else f"ID {acct_id}"
+                split_tree.insert("", tk.END, values=(acct_name, "", amt, memo))
 
             split_acct_var.set("")
             split_amt_var.set("")
@@ -911,7 +913,7 @@ class LedgerGUI(tk.Tk):
 
         # ── Investment account ────────────────────────────────────────
         ttk.Label(frame, text="Investment Account:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        inv_choices, _ = self._build_account_choices(
+        inv_choices, inv_acct_map = self._build_account_choices(
             subtype_filter={"brokerage", "mesp", "retirement"}
         )
         inv_var = tk.StringVar()
@@ -923,7 +925,7 @@ class LedgerGUI(tk.Tk):
 
         # ── Cash account ─────────────────────────────────────────────
         ttk.Label(frame, text="Cash Account:").grid(row=2, column=0, sticky=tk.W, pady=2)
-        cash_choices, _ = self._build_account_choices()
+        cash_choices, cash_acct_map = self._build_account_choices()
         cash_var = tk.StringVar()
         cash_combo = ttk.Combobox(
             frame, textvariable=cash_var,
@@ -937,7 +939,7 @@ class LedgerGUI(tk.Tk):
         gains_label = ttk.Label(gains_frame, text="Gains Account (optional):")
         gains_var = tk.StringVar()
 
-        gain_choices, _ = self._build_account_choices()
+        gain_choices, gain_acct_map = self._build_account_choices()
         gains_combo = ttk.Combobox(
             gains_frame, textvariable=gains_var,
             values=gain_choices, width=50, state="normal",
@@ -986,8 +988,8 @@ class LedgerGUI(tk.Tk):
 
         def submit():
             direction = dir_var.get()
-            inv_id = self._parse_acct_id(inv_var.get())
-            cash_id = self._parse_acct_id(cash_var.get())
+            inv_id = inv_acct_map.get(inv_var.get().strip())
+            cash_id = cash_acct_map.get(cash_var.get().strip())
 
             if inv_id is None:
                 messagebox.showerror("Error", "Select an investment account", parent=dialog)
@@ -1026,7 +1028,7 @@ class LedgerGUI(tk.Tk):
                 return
 
             desc = desc_var.get().strip() or f"{direction.title()} {shares} × {ticker}"
-            gain_id = self._parse_acct_id(gains_var.get())
+            gain_id = gain_acct_map.get(gains_var.get().strip())
 
             try:
                 if direction == "buy":
