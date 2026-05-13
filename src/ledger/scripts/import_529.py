@@ -122,6 +122,10 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
         summary["accounts_created"] += 1
 
     # ── Second pass: create journal entries per record ────────
+    # Track running cost basis per fund so sells don't exceed it
+    journal_cost: dict[str, int] = defaultdict(int)
+    journal_shares: dict[str, float] = defaultdict(float)
+
     for r in records:
         ticker = r.ticker or "unknown"
         sub = ticker_accts.get(ticker)
@@ -134,41 +138,61 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
         except ValueError:
             continue
 
+        jcost = journal_cost[ticker]
+        jshares = journal_shares[ticker]
         memo_lower = (r.memo or "").lower()
         is_closeout = any(w in memo_lower for w in ("conversion", "realign", "system"))
 
         try:
             if r.check_num in ("BuyX", "Buy"):
+                journal_cost[ticker] += amt
+                journal_shares[ticker] += q
                 mgr.add_transaction(dt, f"529 Buy {ticker}",
                     [Split(sub, amt), Split(buyin, -amt)])
                 summary["entries_created"] += 1
 
             elif r.check_num in ("SellX", "Sell"):
-                mgr.add_transaction(dt, f"529 Sell {ticker}",
-                    [Split(buyin, amt), Split(sub, -amt)])
-                summary["entries_created"] += 1
+                if jshares > 0:
+                    sell_shares = min(q, jshares)
+                    fraction = sell_shares / jshares
+                    cost_removed = int(round(jcost * fraction))
+                    gain = amt - cost_removed
+                    journal_cost[ticker] -= min(cost_removed, jcost)
+                    journal_shares[ticker] -= sell_shares
+                    if cost_removed > 0:
+                        splits = [Split(buyin, amt), Split(sub, -cost_removed)]
+                        if gain != 0:
+                            # -gain: positive gain = CR income, negative gain = DR income
+                            splits.append(Split(div_income, -gain))
+                        mgr.add_transaction(dt, f"529 Sell {ticker}", splits)
+                        summary["entries_created"] += 1
 
             elif r.check_num == "ShrsIn" and amt > 0:
+                journal_cost[ticker] += amt
+                journal_shares[ticker] += q
                 mgr.add_transaction(dt, f"529 Dividend {ticker}",
                     [Split(sub, amt), Split(div_income, -amt)])
                 summary["entries_created"] += 1
 
             elif r.check_num == "ShrsOut" and is_closeout:
-                # Use the close-out amount recorded in the first pass
-                f = funds[ticker]
-                for ev in f["closeout_events"]:
-                    if ev["date"] == dt and ev["close_amount"] > 0:
-                        mgr.add_transaction(dt, f"529 Rollover {ticker}",
-                            [Split(buyin, ev["close_amount"]),
-                             Split(sub, -ev["close_amount"])])
-                        summary["entries_created"] += 1
-                        break
+                if jcost > 0:
+                    journal_cost[ticker] = 0
+                    journal_shares[ticker] = 0.0
+                    mgr.add_transaction(dt, f"529 Rollover {ticker}",
+                        [Split(buyin, jcost), Split(sub, -jcost)])
+                    summary["entries_created"] += 1
 
             elif r.check_num == "ShrsOut" and not is_closeout and q > 0:
-                mgr.add_transaction(dt, f"529 Transfer Out {ticker}",
-                    [Split(div_income, amt) if amt > 0 else Split(buyin, 1),
-                     Split(sub, -(amt if amt > 0 else 1))])
-                summary["entries_created"] += 1
+                if jshares > 0:
+                    sell_q = min(q, jshares)
+                    fraction = sell_q / jshares
+                    cost_removed = int(round(jcost * fraction))
+                    journal_cost[ticker] -= min(cost_removed, jcost)
+                    journal_shares[ticker] -= sell_q
+                    if cost_removed > 0:
+                        mgr.add_transaction(dt, f"529 Transfer {ticker}",
+                            [Split(div_income, cost_removed), Split(sub, -cost_removed)])
+                        summary["entries_created"] += 1
 
         except Exception:
             pass
