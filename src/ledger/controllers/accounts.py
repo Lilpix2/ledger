@@ -663,14 +663,14 @@ class AccountManager:
                     continue
                 if aid in self.accounts:
                     bal = self.get_display_balance(aid)
-                    if bal > 0:
+                    if bal != 0:
                         income_by_acct[aid] = bal
             for aid in sorted(expense_ids):
                 if aid not in leaf_ids:
                     continue
                 if aid in self.accounts:
                     bal = self.get_display_balance(aid)
-                    if bal > 0:
+                    if bal != 0:
                         expense_by_acct[aid] = bal
         else:
             for txn in self.journal.transactions.values():
