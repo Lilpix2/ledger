@@ -522,3 +522,404 @@ class TestBuildAccountChoices:
         assert "[brokerage]" in label
         # Should have indentation (starts with spaces since it's under Assets)
         assert label.startswith(" ")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AccountManager.add_account — additional coverage
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestAddAccountEdgeCases:
+    """Edge cases for AccountManager.add_account."""
+
+    def test_empty_name_raises(self, manager: AccountManager):
+        with pytest.raises(ValueError, match="name"):
+            manager.add_account("", 1)
+
+    def test_whitespace_name_raises(self, manager: AccountManager):
+        with pytest.raises(ValueError, match="name"):
+            manager.add_account("   ", 1)
+
+    def test_duplicate_name_same_parent_raises(self, manager: AccountManager):
+        manager.add_account("Dup", 1)
+        with pytest.raises(ValueError, match="already exists"):
+            manager.add_account("Dup", 1)
+
+    def test_duplicate_name_different_parent_succeeds(self, manager: AccountManager):
+        """Same name allowed under different parents."""
+        aid1 = manager.add_account("Resource", 1)
+        aid2 = manager.add_account("Resource", 2)
+        assert aid1 != aid2
+
+    def test_none_parent_raises(self, manager: AccountManager):
+        with pytest.raises(ValueError, match="parent"):
+            manager.add_account("Orphan", None)
+
+    def test_invalid_subtype_raises(self, manager: AccountManager):
+        with pytest.raises(ValueError, match="Invalid account_subtype"):
+            manager.add_account("Bad", 1, account_subtype="imaginary")
+
+    def test_contra_creates_successfully(self, manager: AccountManager):
+        aid = manager.add_account("Contra Test", 1, is_contra=True)
+        assert manager.accounts[aid].is_contra is True
+        assert manager.is_debit_normal(aid) is False  # contra-asset is credit-normal
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AccountManager.add_transaction — additional coverage
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestAddTransactionEdgeCases:
+    """Additional edge cases for add_transaction."""
+
+    def test_empty_description_raises(self, manager: AccountManager):
+        checking = manager.add_account("Checking", 1)
+        groceries = manager.add_account("Groceries", 5)
+        with pytest.raises(ValueError, match="description"):
+            manager.add_transaction(
+                datetime(2026, 1, 1), "",
+                [Split(groceries, 5000), Split(checking, -5000)],
+            )
+
+    def test_whitespace_description_raises(self, manager: AccountManager):
+        checking = manager.add_account("Checking", 1)
+        groceries = manager.add_account("Groceries", 5)
+        with pytest.raises(ValueError, match="description"):
+            manager.add_transaction(
+                datetime(2026, 1, 1), "   ",
+                [Split(groceries, 5000), Split(checking, -5000)],
+            )
+
+    def test_zero_amount_split_raises(self, manager: AccountManager):
+        checking = manager.add_account("Checking", 1)
+        groceries = manager.add_account("Groceries", 5)
+        with pytest.raises(ValueError, match="non-zero"):
+            manager.add_transaction(
+                datetime(2026, 1, 1), "Zero split",
+                [Split(groceries, 0), Split(checking, 5000),
+                 Split(6, -5000)],
+            )
+
+    def test_duplicate_account_in_splits_succeeds(self, manager: AccountManager):
+        """The same account can appear on both sides (debit + credit)."""
+        checking = manager.add_account("Checking", 1)
+        txn_id = manager.add_transaction(
+            datetime(2026, 1, 1), "Internal transfer",
+            [Split(checking, 5000), Split(checking, -5000)],
+        )
+        assert txn_id is not None
+
+    def test_nonexistent_account_in_split_raises(self, manager: AccountManager):
+        checking = manager.add_account("Checking", 1)
+        with pytest.raises(ValueError, match="account"):
+            manager.add_transaction(
+                datetime(2026, 1, 1), "Bad",
+                [Split(checking, 5000), Split(99999, -5000)],
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AccountManager.delete_account — referencing txns
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestDeleteAccountReferencingTxns:
+    """Deleting accounts that have referencing transactions."""
+
+    def test_delete_account_with_ref_txn_cleans_up(self, manager: AccountManager):
+        """Deleting an account with referencing transactions removes them."""
+        checking = manager.add_account("Checking", 1)
+        groceries = manager.add_account("Groceries", 5)
+        salary = manager.add_account("Salary", 4)
+
+        manager.add_transaction(
+            datetime(2026, 1, 1), "Pay",
+            [Split(salary, -100000), Split(checking, 100000)],
+        )
+        manager.add_transaction(
+            datetime(2026, 1, 2), "Shop",
+            [Split(groceries, 5000), Split(checking, -5000)],
+        )
+        manager.generate_ledger()
+
+        txn_count_before = len(manager.journal.transactions)
+
+        # Delete groceries (leaf, has referencing txn)
+        manager.delete_account(groceries)
+        manager.generate_ledger()
+
+        # The referencing transaction should have been deleted
+        assert groceries not in manager.accounts
+        assert len(manager.journal.transactions) == txn_count_before - 1
+
+    def test_delete_account_removes_transaction_balances(self, manager: AccountManager):
+        """After deleting an account with txns, remaining balances are correct."""
+        checking = manager.add_account("Checking", 1)
+        groceries = manager.add_account("Groceries", 5)
+        salary = manager.add_account("Salary", 4)
+
+        manager.add_transaction(
+            datetime(2026, 1, 1), "Pay",
+            [Split(salary, -100000), Split(checking, 100000)],
+        )
+        manager.add_transaction(
+            datetime(2026, 1, 2), "Shop",
+            [Split(groceries, 5000), Split(checking, -5000)],
+        )
+        manager.generate_ledger()
+        assert manager.accounts[checking].get_balance() == 95000
+
+        manager.delete_account(groceries)
+        manager.generate_ledger()
+
+        # Checking balance is now just the salary (100K) since grocery txn
+        # was also deleted
+        assert manager.accounts[checking].get_balance() == 100000
+        assert manager.accounts[salary].get_balance() == -100000
+
+    def test_delete_account_without_txns_keeps_others(self, manager: AccountManager):
+        """Deleting an account without referencing txns doesn't remove anything else."""
+        checking = manager.add_account("Checking", 1)
+        empty = manager.add_account("Empty", 1)
+        salary = manager.add_account("Salary", 4)
+
+        manager.add_transaction(
+            datetime(2026, 1, 1), "Pay",
+            [Split(salary, -100000), Split(checking, 100000)],
+        )
+        manager.generate_ledger()
+
+        txn_count = len(manager.journal.transactions)
+        manager.delete_account(empty)
+        manager.generate_ledger()
+
+        assert empty not in manager.accounts
+        assert len(manager.journal.transactions) == txn_count
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AccountManager.get_balance — raw balance from splits
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestGetBalance:
+    """Verifying raw ledger balances retrieved correctly."""
+
+    def test_get_balance_zero_initially(self, manager: AccountManager):
+        checking = manager.add_account("Checking", 1)
+        assert manager.accounts[checking].get_balance() == 0
+
+    def test_get_balance_after_debit(self, manager: AccountManager):
+        checking = manager.add_account("Checking", 1)
+        salary = manager.add_account("Salary", 4)
+        manager.add_transaction(
+            datetime(2026, 1, 1), "Pay",
+            [Split(salary, -100000), Split(checking, 100000)],
+        )
+        manager.generate_ledger()
+        assert manager.accounts[checking].get_balance() == 100000
+
+    def test_get_balance_after_credit(self, manager: AccountManager):
+        checking = manager.add_account("Checking", 1)
+        salary = manager.add_account("Salary", 4)
+        manager.add_transaction(
+            datetime(2026, 1, 1), "Pay",
+            [Split(salary, -100000), Split(checking, 100000)],
+        )
+        manager.generate_ledger()
+        assert manager.accounts[salary].get_balance() == -100000
+
+    def test_get_balance_net_effect(self, manager: AccountManager):
+        """Balance reflects debits minus credits after multiple txns."""
+        checking = manager.add_account("Checking", 1)
+        salary = manager.add_account("Salary", 4)
+        groceries = manager.add_account("Groceries", 5)
+
+        manager.add_transaction(
+            datetime(2026, 1, 1), "Pay",
+            [Split(salary, -200000), Split(checking, 200000)],
+        )
+        manager.add_transaction(
+            datetime(2026, 1, 2), "Shop",
+            [Split(groceries, 5000), Split(checking, -5000)],
+        )
+        manager.generate_ledger()
+        assert manager.accounts[checking].get_balance() == 195000
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AccountManager.generate_ledger — trial balance integrity
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestGenerateLedger:
+    """Ledger generation and trial balance integrity."""
+
+    def test_trial_balance_zero(self, manager: AccountManager):
+        """Sum of all account balances is always zero."""
+        checking = manager.add_account("Checking", 1)
+        income = manager.add_account("Income", 4)
+        expense = manager.add_account("Expense", 5)
+        manager.add_transaction(
+            datetime(2026, 1, 1), "Txn 1",
+            [Split(income, -1000), Split(checking, 1000)],
+        )
+        manager.add_transaction(
+            datetime(2026, 1, 2), "Txn 2",
+            [Split(expense, 500), Split(checking, -500)],
+        )
+        manager.generate_ledger()
+        total = sum(a.get_balance() for a in manager.accounts.values())
+        assert total == 0, f"Trial balance is {total}, expected 0"
+
+    def test_trial_balance_with_multiple_accounts(self, manager: AccountManager):
+        """Complex compound transaction still sums to zero."""
+        checking = manager.add_account("Checking", 1)
+        savings = manager.add_account("Savings", 1)
+        salary = manager.add_account("Salary", 4)
+        rent = manager.add_account("Rent", 5)
+
+        # Paycheck split to checking + savings
+        manager.add_transaction(
+            datetime(2026, 1, 1), "Payday",
+            [Split(salary, -200000), Split(checking, 150000),
+             Split(savings, 50000)],
+        )
+        # Pay rent from checking
+        manager.add_transaction(
+            datetime(2026, 1, 2), "Rent",
+            [Split(rent, 150000), Split(checking, -150000)],
+        )
+        manager.generate_ledger()
+        total = sum(a.get_balance() for a in manager.accounts.values())
+        assert total == 0
+
+    def test_trial_balance_empty_journal(self, manager: AccountManager):
+        """Empty journal still produces a balanced trial balance."""
+        manager.generate_ledger()
+        total = sum(a.get_balance() for a in manager.accounts.values())
+        assert total == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Data Models: Ledger (data_books.py)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestLedgerModel:
+    """Unit tests for the Ledger model (in-memory per-account ledger)."""
+
+    def test_ledger_create_empty(self):
+        from ledger.models.data_books import Ledger
+        led = Ledger()
+        assert led.entries == {}
+        assert led.sorted_ids == []
+        assert led.id_num == 0
+        assert led.balance == 0
+
+    def test_ledger_add_entry(self):
+        from ledger.models.data_books import Ledger
+        led = Ledger()
+        eid = led.add_entry(datetime(2026, 1, 1), "Test", 0, 5000)
+        assert eid == 0
+        assert len(led.entries) == 1
+        assert led.entries[0].credit == 0
+        assert led.entries[0].debit == 5000
+        assert led.balance == 5000
+
+    def test_ledger_add_credit_entry(self):
+        from ledger.models.data_books import Ledger
+        led = Ledger()
+        led.add_entry(datetime(2026, 1, 1), "Credit", 10000, 0)
+        assert led.balance == -10000
+
+    def test_ledger_balance_cumulative(self):
+        from ledger.models.data_books import Ledger
+        led = Ledger()
+        led.add_entry(datetime(2026, 1, 1), "Start", 0, 10000)
+        led.add_entry(datetime(2026, 1, 2), "Add", 0, 5000)
+        led.add_entry(datetime(2026, 1, 3), "Remove", 3000, 0)
+        assert led.balance == 12000  # 10000 + 5000 - 3000
+
+    def test_ledger_clear_entries(self):
+        from ledger.models.data_books import Ledger
+        led = Ledger()
+        led.add_entry(datetime(2026, 1, 1), "A", 0, 100)
+        led.add_entry(datetime(2026, 1, 2), "B", 0, 200)
+        assert led.balance == 300
+        led.clear_entries()
+        assert led.entries == {}
+        assert led.sorted_ids == []
+        assert led.id_num == 0
+        assert led.balance == 0
+
+    def test_ledger_chronological_order(self):
+        from ledger.models.data_books import Ledger
+        led = Ledger()
+        led.add_entry(datetime(2026, 3, 1), "Mar", 0, 100)
+        led.add_entry(datetime(2026, 1, 1), "Jan", 0, 200)
+        led.add_entry(datetime(2026, 2, 1), "Feb", 0, 300)
+        ordered = led.chronological()
+        dates = [e.date.strftime("%Y-%m-%d") for e in ordered]
+        assert dates == ["2026-01-01", "2026-02-01", "2026-03-01"]
+
+    def test_ledger_by_id_exists(self):
+        from ledger.models.data_books import Ledger
+        led = Ledger()
+        eid = led.add_entry(datetime(2026, 1, 1), "Found", 0, 100)
+        entry = led.by_id(eid)
+        assert entry is not None
+        assert entry.description == "Found"
+
+    def test_ledger_by_id_missing(self):
+        from ledger.models.data_books import Ledger
+        led = Ledger()
+        assert led.by_id(9999) is None
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Data Models: Journal — additional coverage
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestJournalAdditional:
+    """Additional unit tests for Journal methods."""
+
+    def test_journal_by_id_exists(self):
+        from ledger.models.data_books import Journal
+        from ledger.models.data_class import JournalTransaction, Split
+        j = Journal()
+        txn = JournalTransaction(datetime(2026, 1, 1), "A",
+                                 [Split(1, 100), Split(2, -100)])
+        txn_id = j.add_transaction(txn)
+        result = j.by_id(txn_id)
+        assert result is txn
+
+    def test_journal_by_id_missing(self):
+        from ledger.models.data_books import Journal
+        j = Journal()
+        assert j.by_id(9999) is None
+
+    def test_journal_get_db_id_stored(self):
+        from ledger.models.data_books import Journal
+        from ledger.models.data_class import JournalTransaction, Split
+        j = Journal()
+        txn = JournalTransaction(datetime(2026, 1, 1), "A",
+                                 [Split(1, 100), Split(2, -100)])
+        mem_id = j.add_transaction(txn, db_id=42)
+        assert j.get_db_id(mem_id) == 42
+
+    def test_journal_get_db_id_none(self):
+        from ledger.models.data_books import Journal
+        from ledger.models.data_class import JournalTransaction, Split
+        j = Journal()
+        txn = JournalTransaction(datetime(2026, 1, 1), "A",
+                                 [Split(1, 100), Split(2, -100)])
+        mem_id = j.add_transaction(txn)
+        assert j.get_db_id(mem_id) is None
+
+    def test_journal_get_db_id_nonexistent(self):
+        from ledger.models.data_books import Journal
+        j = Journal()
+        assert j.get_db_id(9999) is None

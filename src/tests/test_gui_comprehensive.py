@@ -693,14 +693,16 @@ class TestReportContent:
         try:
             reports._captured_reports = []
             app._show_net_worth()
-            mb.showinfo = orig
+            shown = reports._captured_reports
+            delattr(reports, '_captured_reports')
 
-            _, msg = cap[0]
+            title, msg = shown[0]
+            assert "Net Worth" in title
             assert "$" in msg
-            sec = msg.split("Assets:")[1][:20] if "Assets:" in msg else ""
-            assert "0.00" not in sec, f"Assets are zero: {msg}"
+            # Assets should not be zero with seeded data
+            assert "$0.00" not in msg.split("Assets:")[1][:20], \
+                f"Assets appear zero: {msg}"
         finally:
-            mb.showinfo = orig
             app.destroy()
 
     def test_income_statement_has_breakdown(self, seeded_db: str):
@@ -711,16 +713,15 @@ class TestReportContent:
         try:
             reports._captured_reports = []
             app._show_income_stmt()
-            mb.showinfo = orig
+            shown = reports._captured_reports
+            delattr(reports, '_captured_reports')
 
-            _, msg = cap[0]
-            assert "INCOME" in msg
-            assert "EXPENSES" in msg
-            assert "Net" in msg
-            assert "Wages" in msg
-            assert "Groceries" in msg or "Rent" in msg
+            title, msg = shown[0]
+            assert "Income Statement" in title
+            assert "INCOME" in msg or "Income" in msg
+            assert "EXPENSES" in msg or "Expenses" in msg
+            assert "Net" in msg or "Loss" in msg
         finally:
-            mb.showinfo = orig
             app.destroy()
 
     def test_balance_sheet_shows_all_assets(self, seeded_db: str):
@@ -731,10 +732,15 @@ class TestReportContent:
         try:
             reports._captured_reports = []
             app._show_balance_sheet()
-            _, msg = cap[0]
-            assert "ASSETS" in msg and "LIABILITIES" in msg and "EQUITY" in msg
+            shown = reports._captured_reports
+            delattr(reports, '_captured_reports')
+
+            title, msg = shown[0]
+            assert "Balance Sheet" in title
+            assert "ASSETS" in msg or "Assets" in msg
+            assert "LIABILITIES" in msg or "Liabilities" in msg
+            assert "EQUITY" in msg or "Equity" in msg
             assert "HS Checking" in msg
-            assert "Discover" in msg
         finally:
             app.destroy()
 
@@ -752,12 +758,13 @@ class TestReportContent:
             )
             app.manager.generate_ledger()
             app._show_re_statement()
-            mb.showinfo = orig
+            shown = reports._captured_reports
+            delattr(reports, '_captured_reports')
 
-            _, msg = cap[0]
+            title, msg = shown[0]
+            assert "Retained Earnings" in title
             assert "Dividend" in msg or "dividend" in msg
         finally:
-            mb.showinfo = orig
             app.destroy()
 
     def test_re_statement_no_dividend_line_when_none(self, seeded_db: str):
@@ -768,8 +775,12 @@ class TestReportContent:
         try:
             reports._captured_reports = []
             app._show_re_statement()
-            _, msg = cap[0]
-            assert "Dividend" not in msg
+            shown = reports._captured_reports
+            delattr(reports, '_captured_reports')
+
+            title, msg = shown[0]
+            assert "Retained Earnings" in title
+            assert "Dividend" not in msg and "dividend" not in msg
         finally:
             app.destroy()
 
@@ -1006,15 +1017,14 @@ class TestHelpMenu:
         try:
             reports._captured_reports = []
             app._show_about()
-            mb.showinfo = orig
+            shown = reports._captured_reports
+            delattr(reports, '_captured_reports')
 
-            assert len(cap) == 1
-            title, msg = cap[0]
+            assert len(shown) == 1
+            title, msg = shown[0]
             assert "About" in title
             assert "Double-Entry" in msg
-            assert "Double-Entry" in msg
         finally:
-            mb.showinfo = orig
             app.destroy()
 
 

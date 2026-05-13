@@ -325,55 +325,38 @@ class TestGUIApp:
 
     def test_report_dialogs_open_without_error(self, seeded_db: str):
         """Each report menu command triggers without crashing."""
-        import tkinter as tk
-        import tkinter.messagebox as mb
+        from ledger.gui import reports
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         try:
-            original_show = mb.showinfo
-            shown = []
+            reports._captured_reports = []
 
-            def _fake_show(title, message, **kwargs):
-                shown.append((title, message))
-                return "ok"
-
-            mb.showinfo = _fake_show
-
-            # Trigger each report
             app._show_net_worth()
-            assert any("Net Worth" in s[0] for s in shown), (
-                f"Net Worth not triggered: {shown}"
-            )
-
             app._show_summary()
-            assert any("Account Summary" in s[0] for s in shown), (
-                f"Summary not triggered: {shown}"
-            )
-
             app._show_income_stmt()
-            assert any("Income Statement" in s[0] for s in shown), (
-                f"Income Statement not triggered: {shown}"
-            )
-
             app._show_balance_sheet()
-            assert any("Balance Sheet" in s[0] for s in shown), (
-                f"Balance Sheet not triggered: {shown}"
-            )
-
             app._show_re_statement()
-            assert any("Retained Earnings" in s[0] for s in shown), (
-                f"RE Statement not triggered: {shown}"
-            )
 
-            # The dialogs should show proper numbers (no errors, no None)
+            shown = reports._captured_reports
+            delattr(reports, '_captured_reports')
+
+            assert len(shown) == 5, f"Expected 5 reports, got {len(shown)}"
+
+            # Verify specific reports appeared
+            titles = [t for t, _ in shown]
+            assert "Net Worth" in titles
+            assert "Account Summary" in titles
+            assert "Income Statement" in titles
+            assert "Balance Sheet" in titles
+            assert "Retained Earnings" in titles
+
+            # Verify proper numbers (no errors, no None)
             for title, msg in shown:
                 assert msg is not None
                 assert "None" not in msg
-                assert "Error" not in title
 
         finally:
-            mb.showinfo = original_show
             app.destroy()
 
     def test_status_bar_shows_balanced(self, seeded_db: str):

@@ -197,3 +197,51 @@ class TestDataClassModels:
         d = txn.__dict__()
         assert d["description"] == "Test"
         assert len(d["splits"]) == 2
+
+    # ── Transaction validation edge cases ─────────────────
+
+    def test_validate_bad_returns_false(self):
+        txn = JournalTransaction(
+            datetime(2026, 1, 1), "Bad",
+            [Split(1, 100), Split(2, -50)],
+        )
+        assert txn.validate() is False
+
+    def test_validate_single_split_fails(self):
+        txn = JournalTransaction(
+            datetime(2026, 1, 1), "Single",
+            [Split(1, 100)],
+        )
+        assert txn.validate() is False
+
+    def test_total_empty_splits(self):
+        txn = JournalTransaction(
+            datetime(2026, 1, 1), "Empty", [],
+        )
+        assert txn.total() == 0
+
+    def test_total_multiple_debits(self):
+        txn = JournalTransaction(
+            datetime(2026, 1, 1), "Multiple",
+            [Split(1, 5000), Split(2, 3000), Split(3, -8000)],
+        )
+        assert txn.total() == 8000
+
+    # ── Ledger Entry dict serialization ────────────────────
+
+    def test_ledger_entry_dict(self):
+        from ledger.models.data_class import LedgerEntry
+        entry = LedgerEntry(datetime(2026, 1, 1), "Test", 0, 5000, 5000)
+        d = entry.__dict__()
+        assert d["debit"] == 5000
+        assert d["credit"] == 0
+        assert d["balance"] == 5000
+        assert d["description"] == "Test"
+
+    def test_ledger_entry_credit_dict(self):
+        from ledger.models.data_class import LedgerEntry
+        entry = LedgerEntry(datetime(2026, 1, 2), "Credit", 10000, 0, -10000)
+        d = entry.__dict__()
+        assert d["credit"] == 10000
+        assert d["debit"] == 0
+        assert d["balance"] == -10000
