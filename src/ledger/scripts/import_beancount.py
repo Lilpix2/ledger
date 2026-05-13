@@ -146,6 +146,102 @@ def _ensure_account_path(mgr: AccountManager, path: str, subtype: str | None = N
     return parent_id
 
 
+# ── Investment transaction parsing ──────────────────────────────────
+
+
+def _import_investment_txn(
+    mgr: AccountManager,
+    dt: datetime,
+    narration: str,
+    usd_splits: list[Split],
+    commodity_postings: list,
+    bc_to_ledger_id: dict[str, int],
+) -> int:
+    """Try to import a mixed USD + commodity transaction.
+
+    For each commodity posting, creates a buy/sell entry using the
+    ledger TUI's investment transaction methods.
+
+    Returns the number of investment transactions created, or 0 if
+    the transaction couldn't be parsed.
+    """
+    from beancount.core.data import CostSpec, Cost
+
+    count = 0
+
+    for cp in commodity_postings:
+        ticker = cp.units.currency
+        shares = float(cp.units.number)
+
+        if shares == 0:
+            continue
+
+        # Extract cost per share from posting.cost
+        cost_per_share_cents = 0
+        if cp.cost is not None:
+            if hasattr(cp.cost, 'number_per') and cp.cost.number_per is not None:
+                cost_per_share_cents = int(round(float(cp.cost.number_per) * 100))
+            elif hasattr(cp.cost, 'number') and cp.cost.number is not None:
+                cost_per_share_cents = int(round(float(cp.cost.number) * 100))
+            elif hasattr(cp.cost, 'cost') and cp.cost.cost is not None:
+                cost_per_share_cents = int(round(float(cp.cost.cost) * 100))
+
+        if cost_per_share_cents == 0:
+            continue  # Can't determine cost — skip
+
+        total_cents = int(round(abs(shares) * cost_per_share_cents))
+        if total_cents == 0:
+            continue
+
+        # Find the investment account
+        inv_acct_id = bc_to_ledger_id.get(cp.account)
+        if inv_acct_id is None:
+            continue
+
+        # Find the matching cash account from USD splits
+        # The cash amount should roughly match total_cents (allow small diffs)
+        cash_acct_id = None
+        cash_amt = 0
+        for s in usd_splits:
+            if abs(s.amount) == total_cents or abs(abs(s.amount) - total_cents) <= 1:
+                cash_acct_id = s.account_id
+                cash_amt = s.amount
+                break
+
+        if cash_acct_id is None:
+            continue  # No matching cash account
+
+        try:
+            if shares > 0:
+                # Buy
+                mgr.buy_security(
+                    date=dt,
+                    description=narration,
+                    brokerage_id=inv_acct_id,
+                    cash_id=cash_acct_id,
+                    ticker=ticker,
+                    shares=abs(shares),
+                    price_cents=cost_per_share_cents,
+                )
+            else:
+                # Sell
+                mgr.sell_security(
+                    date=dt,
+                    description=narration,
+                    brokerage_id=inv_acct_id,
+                    cash_id=cash_acct_id,
+                    ticker=ticker,
+                    shares=abs(shares),
+                    price_cents=cost_per_share_cents,
+                )
+            count += 1
+        except ValueError as e:
+            print(f"    ⚠  Skipping investment txn: {narration}: {e}")
+            continue
+
+    return count
+
+
 # ── Main import logic ─────────────────────────────────────────────
 
 
@@ -236,34 +332,35 @@ def import_beancount(
     # ── Phase 2: Import Transactions ────────────────────────────────
     print(f"\n── Phase 2: Importing {len(transactions)} transactions ──")
 
+    def _ensure_acct(beancount_acct: str) -> int:
+        """Look up or create a ledger account for a Beancount account."""
+        if beancount_acct not in bc_to_ledger_id:
+            subtype = detect_subtype(beancount_acct)
+            a_id = _ensure_account_path(mgr, beancount_acct, subtype)
+            bc_to_ledger_id[beancount_acct] = a_id
+        return bc_to_ledger_id[beancount_acct]
+
+    imported_usd = 0
+    imported_investment = 0
     skipped_narration = 0
-    skipped_commodity = 0
     skipped_balance = 0
+    skipped_unsupported = 0
 
     for i, txn in enumerate(transactions):
         narration = txn.narration or txn.payee or ""
+        dt = datetime(txn.date.year, txn.date.month, txn.date.day)
 
-        splits = []
-        has_commodity = False
+        # Separate USD postings from commodity postings
+        usd_splits: list[Split] = []
+        commodity_postings: list = []
 
         for posting in txn.postings:
-            if posting.account not in bc_to_ledger_id:
-                # Create account on-the-fly
-                subtype = detect_subtype(posting.account)
-                acct_id = _ensure_account_path(mgr, posting.account, subtype)
-                bc_to_ledger_id[posting.account] = acct_id
-                accounts_created += 1
-            else:
-                acct_id = bc_to_ledger_id[posting.account]
-
-            units = posting.units
-            if units is None:
+            if posting.units is None:
                 continue
+            acct_id = _ensure_acct(posting.account)
+            currency = posting.units.currency.upper()
+            number = posting.units.number
 
-            currency = units.currency
-            number = units.number
-
-            # Convert to cents
             try:
                 cents = int(round(float(number) * 100))
             except (ValueError, TypeError, OverflowError):
@@ -272,44 +369,48 @@ def import_beancount(
             if cents == 0:
                 continue
 
-            # Track commodities (non-USD postings)
-            if currency.upper() != "USD":
-                has_commodity = True
+            if currency == "USD":
+                usd_splits.append(Split(acct_id, cents, memo=currency))
+            else:
+                commodity_postings.append(posting)
 
-            splits.append(Split(acct_id, cents, memo=currency))
-
-        if not splits:
+        if not usd_splits and not commodity_postings:
             skipped_narration += 1
             continue
 
-        if has_commodity:
-            skipped_commodity += 1
-            continue
-
-        # Check balance
-        total = sum(s.amount for s in splits)
-        if total != 0:
-            skipped_balance += 1
-            continue
-
-        try:
-            # Beancount date is a datetime.date, convert to datetime
-            dt = datetime(txn.date.year, txn.date.month, txn.date.day)
-            mgr.add_transaction(dt, narration, splits)
-            transactions_imported += 1
-        except ValueError as e:
-            skipped_balance += 1
+        if not commodity_postings:
+            # Pure-USD transaction — import normally
+            if sum(s.amount for s in usd_splits) != 0:
+                skipped_balance += 1
+                continue
+            try:
+                mgr.add_transaction(dt, narration, usd_splits)
+                imported_usd += 1
+            except ValueError:
+                skipped_balance += 1
+        elif usd_splits:
+            # Mixed USD + commodity — convert to buy/sell operations
+            bought = _import_investment_txn(mgr, dt, narration,
+                                            usd_splits, commodity_postings,
+                                            bc_to_ledger_id)
+            if bought:
+                imported_investment += bought
+            else:
+                skipped_unsupported += 1
+        else:
+            # Commodity-only (internal transfers, corrections) — skip
+            skipped_unsupported += 1
 
         if (i + 1) % 500 == 0:
             print(f"  ... {i + 1}/{len(transactions)} processed")
 
-    print(f"  Imported: {transactions_imported}")
+    print(f"  Imported: {imported_usd} USD + {imported_investment} investment")
     if skipped_narration:
         print(f"  Skipped (no splits): {skipped_narration}")
-    if skipped_commodity:
-        print(f"  Skipped (commodity postings): {skipped_commodity}")
     if skipped_balance:
         print(f"  Skipped (unbalanced): {skipped_balance}")
+    if skipped_unsupported:
+        print(f"  Skipped (commodity-only or unsupported): {skipped_unsupported}")
 
     # ── Phase 3: Compute Holdings ───────────────────────────────────
     print(f"\n── Phase 3: Computing holdings ──")
@@ -426,14 +527,12 @@ def _compute_holdings(entries: list) -> dict[str, list]:
                 # Non-cost posting (e.g., price conversion)
                 positions[acct].add_amount(posting.units)
 
-    # Reduce to final positions
-    result = {}
-    for acct, inv in positions.items():
-        reduced = inv.reduce()
-        if not reduced.is_empty():
-            result[acct] = reduced.get_positions()
-
-    return result
+    # Collect final positions (add_position auto-merges same-cost lots)
+    return {
+        acct: inv.get_positions()
+        for acct, inv in positions.items()
+        if not inv.is_empty()
+    }
 
 
 # ── CLI entry point ─────────────────────────────────────────────────
