@@ -872,7 +872,7 @@ class CSVImportDialog:
         header = ttk.Frame(scrollable)
         header.pack(fill=tk.X, pady=2)
         for i, (text, w) in enumerate([
-            ("Category", 140), ("Type", 60), ("Account Name", 200), ("Sample", 120),
+            ("Category", 140), ("Type", 80), ("Account Name", 200), ("Sample", 120),
         ]):
             ttk.Label(header, text=text, font=("", 9, "bold"), width=w//7).pack(
                 side=tk.LEFT, padx=2,
@@ -890,10 +890,12 @@ class CSVImportDialog:
             ttk.Label(frame, text=cat_info["raw"][:25], width=20).pack(
                 side=tk.LEFT, padx=2,
             )
-            # Type badge
-            badge = {"ASSET": "A", "INCOME": "I", "EXPENSE": "E"}
-            ttk.Label(frame, text=badge.get(cat_info["type"], "?"),
-                      width=4, anchor=tk.CENTER).pack(side=tk.LEFT, padx=2)
+            # Editable type
+            type_var = tk.StringVar(value=cat_info["type"])
+            type_combo = ttk.Combobox(frame, textvariable=type_var,
+                                       values=("ASSET", "LIABILITY", "INCOME", "EXPENSE"),
+                                       width=9, state="readonly")
+            type_combo.pack(side=tk.LEFT, padx=2)
             # Editable account name
             name_var = tk.StringVar(value=cat_info["account_name"])
             entry = ttk.Entry(frame, textvariable=name_var, width=28)
@@ -906,8 +908,8 @@ class CSVImportDialog:
 
             self.category_widgets.append({
                 "raw": cat_info["raw"],
-                "var": name_var,
-                "type": cat_info["type"],
+                "name_var": name_var,
+                "type_var": type_var,
             })
 
         # Buttons
@@ -929,12 +931,12 @@ class CSVImportDialog:
             cat_map: dict[str, int] = {}
             for w in self.category_widgets:
                 raw = w["raw"]
-                name = w["var"].get().strip() or f"Imported {raw[:20]}"
-                acct_type = w["type"]
+                name = w["name_var"].get().strip() or f"Imported {raw[:20]}"
+                acct_type = w["type_var"].get()
 
                 # Find or create account
-                parent = {"ASSET": 1, "LIABILITY": 2, "INCOME": 4, "EXPENSE": 5}
-                pid = parent.get(acct_type, 5)
+                parent_map = {"ASSET": 1, "LIABILITY": 2, "INCOME": 4, "EXPENSE": 5}
+                pid = parent_map.get(acct_type, 5)
 
                 aid = None
                 for existing_aid, a in self.manager.accounts.items():
