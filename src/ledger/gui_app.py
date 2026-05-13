@@ -16,7 +16,7 @@ To launch::
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, simpledialog
 from collections import OrderedDict
 
 from datetime import datetime
@@ -732,21 +732,149 @@ class LedgerGUI(tk.Tk):
         BuySellDialog(self, self.manager, self._refresh_all)
 
     def _dialog_import_qif(self) -> None:
-        """Open a file dialog to select and import a QIF file."""
+        """Open a file dialog to select and import a QIF or CSV file."""
         from tkinter import filedialog, messagebox
-        from ledger.scripts.import_qif import import_qif
 
         path = filedialog.askopenfilename(
-            title="Select a QIF file to import",
+            title="Select a file to import (QIF or CSV)",
             filetypes=[
+                ("Ledger files", "*.qif *.csv"),
                 ("QIF files", "*.qif"),
+                ("CSV files", "*.csv"),
                 ("All files", "*.*"),
             ],
         )
         if not path:
             return
 
-        # Dry run first
+        ext = os.path.splitext(path)[1].lower()
+
+        if ext == ".csv":
+            self._import_csv(path)
+        else:
+            self._import_qif_file(path)
+
+    def _import_csv(self, path: str) -> None:
+        """Import a CSV file (same format as the reconciled CSVs)."""
+        from tkinter import messagebox
+        import csv
+        from datetime import datetime
+
+        basename = os.path.basename(path)
+        account_name = simpledialog.askstring(
+            "Account Name",
+            f"Enter the account name for this CSV:\n(e.g. Alex College XX3233)",
+            initialvalue=os.path.splitext(basename)[0].split("---")[0].replace("_", " ").title(),
+        )
+        if not account_name:
+            return
+
+        # Parse and preview
+        rows = []
+        try:
+            with open(path, encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    try:
+                        amt = float(row.get("Amount", "0") or "0")
+                    except ValueError:
+                        continue
+                    rows.append(row)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read CSV:\n{e}")
+            return
+
+        if not rows:
+            messagebox.showinfo("Import", "No rows found in CSV.")
+            return
+
+        # Confirm
+        total = sum(float(r["Amount"]) for r in rows if r.get("Amount"))
+        if not messagebox.askyesno(
+            "Import CSV",
+            f"File: {basename}\n"
+            f"Account: {account_name}\n"
+            f"Rows: {len(rows)}\n"
+            f"Net change: \${total:+,.2f}\n\n"
+            f"Import into the ledger?",
+        ):
+            return
+
+        # Create account and import
+        try:
+            acct_id = None
+            for aid, a in self.manager.accounts.items():
+                if a.name == account_name:
+                    acct_id = aid
+                    break
+            if acct_id is None:
+                acct_id = self.manager.add_account(account_name, 1, "ASSET")
+
+            income_acct = None
+            expense_acct = None
+
+            mgr = self.manager
+            from ledger.models.data_class import Split
+
+            import_count = 0
+            for row in rows:
+                date_str = row.get("Date", "").strip()
+                amt_str = row.get("Amount", "0").strip()
+                payee = row.get("Payee", "").strip()
+                cat = row.get("Category", "").strip()
+
+                if not date_str or not amt_str:
+                    continue
+
+                # Parse date — handle M/D'YY format
+                try:
+                    dt = datetime.strptime(date_str, "%m/%d'%y")
+                except ValueError:
+                    try:
+                        dt = datetime.strptime(date_str, "%m/%d/%Y")
+                    except ValueError:
+                        continue
+
+                try:
+                    amt_cents = int(round(float(amt_str) * 100))
+                except (ValueError, TypeError):
+                    continue
+
+                if amt_cents == 0:
+                    continue
+
+                if amt_cents > 0:
+                    # Money in: DR account, CR income
+                    if income_acct is None:
+                        income_acct = _ensure_income_cat(mgr, cat, "Income:CSV Import")
+                    mgr.add_transaction(dt, payee or "CSV Import",
+                        [Split(acct_id, amt_cents), Split(income_acct, -amt_cents)])
+                else:
+                    # Money out: DR expense, CR account
+                    if expense_acct is None:
+                        expense_acct = _ensure_expense_cat(mgr, cat, "Expenses:CSV Import")
+                    out = abs(amt_cents)
+                    mgr.add_transaction(dt, payee or "CSV Import",
+                        [Split(expense_acct, out), Split(acct_id, -out)])
+
+                import_count += 1
+
+            mgr.generate_ledger()
+            messagebox.showinfo(
+                "Import Complete",
+                f"Imported {import_count} entries into '{account_name}'.\n"
+                f"Net change to account: \${total:+,.2f}",
+            )
+            self._refresh_all()
+
+        except Exception as e:
+            messagebox.showerror("Import Error", str(e))
+
+    def _import_qif_file(self, path: str) -> None:
+        """Import a QIF file using the general importer."""
+        from tkinter import messagebox
+        from ledger.scripts.import_qif import import_qif
+
         try:
             dry_summary = import_qif(path, self.manager.db.db_path, dry_run=True)
         except Exception as e:
@@ -759,7 +887,6 @@ class LedgerGUI(tk.Tk):
                 "No transaction records found in this file.")
             return
 
-        # Ask to confirm
         msg = (
             f"File: {os.path.basename(path)}\n"
             f"Type: {dry_summary.get('type', 'Unknown')}\n"
@@ -769,7 +896,6 @@ class LedgerGUI(tk.Tk):
         if not messagebox.askyesno("Import QIF", msg):
             return
 
-        # Do the import
         try:
             from datetime import datetime
             start = datetime.now()
@@ -937,6 +1063,30 @@ class LedgerGUI(tk.Tk):
             f"{parent_info}"
             f"Children: {children}",
         )
+
+
+def _ensure_income_cat(mgr, cat: str | None, default: str) -> int:
+    """Find or create an income account matching the category."""
+    if cat and "income" in cat.lower():
+        name = cat
+    else:
+        name = default
+    for aid, a in mgr.accounts.items():
+        if a.name == name and a.acct_type == "INCOME":
+            return aid
+    return mgr.add_account(name, 4, "INCOME")
+
+
+def _ensure_expense_cat(mgr, cat: str | None, default: str) -> int:
+    """Find or create an expense account matching the category."""
+    if cat and "income" not in cat.lower():
+        name = cat if cat else default
+    else:
+        name = default
+    for aid, a in mgr.accounts.items():
+        if a.name == name and a.acct_type == "EXPENSE":
+            return aid
+    return mgr.add_account(name, 5, "EXPENSE")
 
 
 # ── Entry point ────────────────────────────────────────────────────
