@@ -231,7 +231,8 @@ class TransactionDialog:
 
     def _build(self, parent: tk.Widget) -> None:
         dialog = tk.Toplevel(parent)
-        dialog.title("Edit Transaction" if self.edit_txn else "New Transaction")
+        is_edit = self.edit_txn is not None
+        dialog.title("Edit Transaction" if is_edit else "New Transaction")
         dialog.geometry("500x450")
         dialog.resizable(True, True)
         dialog.transient(parent)
