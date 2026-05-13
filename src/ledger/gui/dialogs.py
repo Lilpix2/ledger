@@ -59,7 +59,8 @@ class AccountDialog:
 
     def _build(self, parent: tk.Widget) -> None:
         dialog = tk.Toplevel(parent)
-        dialog.title("New Account")
+        is_edit = self.edit_acct is not None
+        dialog.title("Edit Account" if is_edit else "New Account")
         dialog.geometry("400x300")
         dialog.resizable(False, False)
         dialog.transient(parent)
@@ -181,7 +182,7 @@ class AccountDialog:
             except ValueError as e:
                 messagebox.showerror("Error", str(e), parent=dialog)
 
-        ttk.Button(btn_frame, text="Create", command=_submit).pack(
+        ttk.Button(btn_frame, text="Save" if is_edit else "Create", command=_submit).pack(
             side=tk.LEFT, padx=4,
         )
         ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(
