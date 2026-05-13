@@ -566,7 +566,7 @@ class BuySellDialog:
             row=1, column=0, sticky=tk.W, pady=2,
         )
         inv_choices, inv_map = build_account_choices(
-            manager, subtype_filter={"brokerage", "mesp", "retirement"},
+            self.manager, subtype_filter={"brokerage", "mesp", "retirement"},
         )
         inv_var = tk.StringVar()
         inv_combo = ttk.Combobox(
