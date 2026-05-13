@@ -581,7 +581,7 @@ class BuySellDialog:
         ttk.Label(frame, text="Cash Account:").grid(
             row=2, column=0, sticky=tk.W, pady=2,
         )
-        cash_choices, cash_map = build_account_choices(manager)
+        cash_choices, cash_map = build_account_choices(self.manager)
         cash_var = tk.StringVar()
         cash_combo = ttk.Combobox(
             frame, textvariable=cash_var,
