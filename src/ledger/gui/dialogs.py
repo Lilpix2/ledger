@@ -802,13 +802,16 @@ class CSVImportDialog:
 
     @staticmethod
     def _suggest_type(cat: str) -> str:
-        if cat.startswith("["):
-            return "ASSET"
         lower = cat.lower()
         if "income" in lower:
             return "INCOME"
         if "expense" in lower:
             return "EXPENSE"
+        if cat.startswith("["):
+            # Bracket categories are other accounts — default INCOME
+            # so the main account balance reflects the net change.
+            # User can override to ASSET if it's actually a transfer.
+            return "INCOME"
         return "EXPENSE"
 
     @staticmethod
@@ -921,43 +924,50 @@ class CSVImportDialog:
             dialog.destroy()
 
         def _proceed() -> None:
+            from tkinter import messagebox
             acct_name = self.acct_var.get().strip()
             if not acct_name:
-                from tkinter import messagebox
                 messagebox.showerror("Error", "Account name is required", parent=dialog)
                 return
 
             # Build the mapping
             cat_map: dict[str, int] = {}
-            for w in self.category_widgets:
-                raw = w["raw"]
-                name = w["name_var"].get().strip() or f"Imported {raw[:20]}"
-                acct_type = w["type_var"].get()
+            try:
+                for w in self.category_widgets:
+                    raw = w["raw"]
+                    name = w["name_var"].get().strip() or f"Imported {raw[:20]}"
+                    acct_type = w["type_var"].get()
 
-                # Find or create account
-                parent_map = {"ASSET": 1, "LIABILITY": 2, "INCOME": 4, "EXPENSE": 5}
-                pid = parent_map.get(acct_type, 5)
+                    # Find or create account
+                    parent_map = {"ASSET": 1, "LIABILITY": 2, "INCOME": 4, "EXPENSE": 5}
+                    pid = parent_map.get(acct_type, 5)
 
-                aid = None
-                for existing_aid, a in self.manager.accounts.items():
-                    if a.name == name and a.parent == pid:
-                        aid = existing_aid
-                        break
-                    if a.name == name and a.acct_type == acct_type:
-                        aid = existing_aid
-                        break
+                    aid = None
+                    for existing_aid, a in self.manager.accounts.items():
+                        if a.name == name and a.parent == pid:
+                            aid = existing_aid
+                            break
+                        if a.name == name and a.acct_type == acct_type:
+                            aid = existing_aid
+                            break
 
-                if aid is None:
-                    aid = self.manager.add_account(name, pid, acct_type)
+                    if aid is None:
+                        aid = self.manager.add_account(name, pid, acct_type)
 
-                cat_map[raw] = aid
+                    cat_map[raw] = aid
 
-            self.result = {
-                "account_name": acct_name,
-                "cat_map": cat_map,
-                "total_rows": len(self.rows),
-            }
-            dialog.destroy()
+                self.result = {
+                    "account_name": acct_name,
+                    "cat_map": cat_map,
+                    "total_rows": len(self.rows),
+                }
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror(
+                    "Import Error",
+                    f"Failed to set up accounts:\n{type(e).__name__}: {e}",
+                    parent=dialog,
+                )
 
         ttk.Button(btn_frame, text="Cancel", command=_cancel).pack(
             side=tk.RIGHT, padx=4,
