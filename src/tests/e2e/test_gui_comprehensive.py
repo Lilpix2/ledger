@@ -1329,13 +1329,16 @@ class TestCRUDThroughDialogs:
 
     def test_account_dialog_saves_account(self, seeded_db: str):
         """AccountDialog's save method creates a new account."""
+        import tkinter as tk
+        from unittest.mock import patch
         from ledger.gui.dialogs import AccountDialog
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         acct_count_before = len(app.manager.accounts)
         try:
-            dialog = AccountDialog(app, app.manager, on_success=lambda: None)
+            with patch.object(tk.Misc, "wait_window"):
+                dialog = AccountDialog(app, app.manager, on_success=lambda: None)
             # Test that the dialog wired up its save button
             assert hasattr(dialog, "dialog")
             assert hasattr(dialog, "on_success")
@@ -1350,13 +1353,16 @@ class TestCRUDThroughDialogs:
 
     def test_transaction_dialog_saves_transaction(self, seeded_db: str):
         """TransactionDialog's save method creates a new transaction."""
+        import tkinter as tk
+        from unittest.mock import patch
         from ledger.gui.dialogs import TransactionDialog
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         txn_count_before = len(app.manager.journal.transactions)
         try:
-            dialog = TransactionDialog(app, app.manager, on_success=lambda: None)
+            with patch.object(tk.Misc, "wait_window"):
+                dialog = TransactionDialog(app, app.manager, on_success=lambda: None)
             assert hasattr(dialog, "dialog")
             assert hasattr(dialog, "on_success")
             assert dialog.manager is app.manager
