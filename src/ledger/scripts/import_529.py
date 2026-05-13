@@ -105,7 +105,17 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
 
     # ── Open the ledger ───────────────────────────────────────
     mgr = AccountManager(db_path)
-    mgr.generate_ledger()
+
+    # Clean slate: delete any existing 529-related journal entries
+    mesp_acct_ids = {
+        aid for aid, acct in mgr.accounts.items()
+        if acct.account_subtype == "mesp"
+        or acct.name in ("529 Contributions", "529 Dividends", "529 Fees")
+    }
+    for txn_id in list(mgr.journal.transactions.keys()):
+        txn = mgr.journal.transactions[txn_id]
+        if any(s.account_id in mesp_acct_ids for s in txn.splits):
+            mgr.delete_transaction(txn_id)
 
     # Buy-in account: where the money came from
     buyin = _ensure_account(mgr, "529 Contributions", 4, "INCOME")

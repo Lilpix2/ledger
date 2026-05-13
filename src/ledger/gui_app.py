@@ -286,6 +286,7 @@ class LedgerGUI(tk.Tk):
         self.transaction_table.pack(fill=tk.BOTH, expand=True)
         self.transaction_table.bind("<Double-1>", self._on_transaction_double_click)
         self.transaction_table.bind("<Button-3>", self._on_transaction_right_click)
+        self.transaction_table.bind("<Delete>", lambda e: self._delete_selected_transaction())
         paned.add(right_frame, weight=2)
 
     # ── Portfolio tab ─────────────────────────────────────────────
@@ -702,10 +703,15 @@ class LedgerGUI(tk.Tk):
         txn = self.manager.journal.transactions.get(txn_id)
         if not txn:
             return
-        desc = txn.description[:50]
+        total = sum(s.amount for s in txn.splits if s.amount > 0)
+        date_str = txn.date.strftime(DATE_STR)
+        desc = txn.description[:60]
         if messagebox.askyesno(
             "Delete Transaction",
-            f"Delete transaction #{txn_id}\n'{desc}'?\n\nThis cannot be undone.",
+            f"Delete transaction #{txn_id}?\n"
+            f"{date_str}  {format_cents(total):>8s}\n"
+            f"'{desc}'\n\n"
+            f"This cannot be undone.",
         ):
             try:
                 self.manager.delete_transaction(txn_id)
@@ -752,6 +758,17 @@ class LedgerGUI(tk.Tk):
                 self._apply_filters()
             except ValueError:
                 pass
+
+    def _delete_selected_transaction(self) -> None:
+        """Delete the currently selected journal entry (via Delete key)."""
+        selected = self.transaction_table.selection()
+        if not selected:
+            return
+        try:
+            txn_id = int(selected[0])
+        except ValueError:
+            return
+        self._dialog_delete_transaction(txn_id)
 
     def _on_transaction_double_click(self, event: object = None) -> None:
         """Open the TransactionDialog to edit the double-clicked entry."""
