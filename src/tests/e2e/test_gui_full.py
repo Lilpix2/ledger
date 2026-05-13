@@ -48,6 +48,10 @@ def _close_windows():
                         c.destroy()
                     except Exception:
                         pass
+                try:
+                    r.destroy()
+                except Exception:
+                    pass
         except Exception:
             pass
 

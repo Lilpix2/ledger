@@ -52,6 +52,10 @@ def _close_tkinter_windows():
                         child.destroy()
                     except Exception:
                         pass
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
         except Exception:
             pass
 

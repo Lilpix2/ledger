@@ -52,6 +52,10 @@ def _close_tkinter_windows():
                         child.destroy()
                     except Exception:
                         pass
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -1342,7 +1346,10 @@ class TestCRUDThroughDialogs:
             assert hasattr(dialog, "on_success")
             assert dialog.manager is app.manager
         finally:
-            pass  # _close_windows handles cleanup
+            try:
+                app.destroy()
+            except Exception:
+                pass
 
     def test_transaction_dialog_saves_transaction(self, seeded_db: str):
         """TransactionDialog class exists and constructs correctly."""
@@ -1359,7 +1366,10 @@ class TestCRUDThroughDialogs:
             assert hasattr(dialog, "on_success")
             assert dialog.manager is app.manager
         finally:
-            pass  # _close_windows handles cleanup
+            try:
+                app.destroy()
+            except Exception:
+                pass
 
     def test_delete_transaction_from_table(self, seeded_db: str):
         """Select and delete a transaction via the UI method."""
