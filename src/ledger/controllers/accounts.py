@@ -479,17 +479,20 @@ class AccountManager:
 
         sell_memo = memo or f"Sell {shares} × {ticker} @ ${price_cents/100:.2f}"
 
-        splits = [
-            Split(cash_id, total_cents, memo=sell_memo),
-            Split(brokerage_id, -cost_of_sold, memo=f"Cost: {shares} × {ticker}"),
-        ]
-
         if gain_account_id is not None and realized_gain != 0:
-            # For a gain: credit the income account (negative split = credit)
-            # For a loss: debit an expense/loss account (positive split = debit)
-            # In both cases, -realized_gain gives the right sign
+            # Book realized gain/loss to a P&L account
             gain_memo = f"{'Gain' if realized_gain > 0 else 'Loss'} on {ticker} sale"
-            splits.append(Split(gain_account_id, -realized_gain, memo=gain_memo))
+            splits = [
+                Split(cash_id, total_cents, memo=sell_memo),
+                Split(brokerage_id, -cost_of_sold, memo=f"Cost: {shares} × {ticker}"),
+                Split(gain_account_id, -realized_gain, memo=gain_memo),
+            ]
+        else:
+            # No separate gain tracking — fold proceeds into brokerage split
+            splits = [
+                Split(cash_id, total_cents, memo=sell_memo),
+                Split(brokerage_id, -total_cents, memo=f"Sell {shares} × {ticker}"),
+            ]
 
         txn_id = self.add_transaction(date, description, splits)
 
