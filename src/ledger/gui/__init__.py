@@ -3,10 +3,9 @@ tkinter GUI package for the double-entry ledger system.
 
 Package layout
 ──────────────
-gui_app.py        ← Entry point script (tiny wrapper)
+gui_app.py        ← Entry point — LedgerGUI main application
 gui/
-  __init__.py     ← This file — package overview
-  app.py          ← LedgerGUI main application (windows, tabs, refresh)
+  __init__.py     ← Package overview + re-exports of gui/ submodules
   dialogs.py      ← Modal dialogs: AccountDialog, TransactionDialog, BuySellDialog
   reports.py      ← Report viewer functions (net worth, income statement, etc.)
   widgets.py      ← Shared widgets: AccountSelector, format_cents, build_account_choices
@@ -16,13 +15,11 @@ To launch:
     # or: ledger  (if installed via pip)
 """
 
-from .app import LedgerGUI
+from .dialogs import AccountDialog, TransactionDialog, BuySellDialog
 from .reports import show_net_worth, show_summary, show_income_stmt
 from .reports import show_balance_sheet, show_re_statement, show_about
-from .dialogs import AccountDialog, TransactionDialog, BuySellDialog
 
 __all__ = [
-    "LedgerGUI",
     "AccountDialog", "TransactionDialog", "BuySellDialog",
     "show_net_worth", "show_summary", "show_income_stmt",
     "show_balance_sheet", "show_re_statement", "show_about",
