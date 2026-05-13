@@ -83,6 +83,26 @@ class DatabaseController:
             )
             return cur.lastrowid
 
+    def update_account(
+        self, acct_id: int, name: str,
+        parent_id: int | None = None,
+        acct_type: str | None = None,
+        account_subtype: str | None = None,
+    ) -> None:
+        """Update an existing account's metadata."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE accounts SET name=?, parent_id=?, acct_type=?, account_subtype=? "
+                "WHERE account_id=?",
+                (name, parent_id, acct_type, account_subtype, acct_id),
+            )
+
+    def delete_account(self, acct_id: int) -> None:
+        """Remove an account and its holdings from the database."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM holdings WHERE account_id = ?", (acct_id,))
+            conn.execute("DELETE FROM accounts WHERE account_id = ?", (acct_id,))
+
     def save_transaction(
         self, date: str, description: str, splits: list[Split]
     ) -> int:

@@ -127,6 +127,39 @@ class AccountManager:
         self.accounts[acct_id] = Account(name, parent, acct_type, is_contra, account_subtype)
         return acct_id
 
+    def update_account(
+        self, acct_id: int, name: str,
+        parent: int | None = None,
+        acct_type: str | None = None,
+        account_subtype: str | None = None,
+    ) -> None:
+        """Update an existing account's name, parent, type, or subtype."""
+        if acct_id not in self.accounts:
+            raise ValueError(f"Account #{acct_id} not found")
+        acct = self.accounts[acct_id]
+        acct.name = name
+        if parent is not None:
+            acct.parent = parent
+        if acct_type is not None:
+            acct.acct_type = acct_type
+        if account_subtype is not None:
+            acct.account_subtype = account_subtype
+        db_parent = parent if parent is not None and parent != 0 else None
+        self.db.update_account(acct_id, name, db_parent, acct_type, account_subtype)
+
+    def delete_account(self, acct_id: int) -> None:
+        """Remove an account. Fails if it has children."""
+        children = [a for a in self.accounts.values() if a.parent == acct_id]
+        if children:
+            raise ValueError(
+                f"Cannot delete '{self.accounts[acct_id].name}': "
+                f"has {len(children)} sub-account(s)"
+            )
+        if acct_id == 0:
+            raise ValueError("Cannot delete root account")
+        self.db.delete_account(acct_id)
+        del self.accounts[acct_id]
+
     # ── Transactions (compound) ─────────────────────────────────────
 
     def add_transaction(

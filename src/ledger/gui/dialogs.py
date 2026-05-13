@@ -23,16 +23,18 @@ from ledger.constants import DATE_STR, ACCOUNT_SUBTYPES
 from .widgets import build_account_choices
 
 if TYPE_CHECKING:
-    from ledger.controllers.accounts import AccountManager
+    from ledger.controllers.accounts import AccountManager, Account
 
 
 # ── New Account ────────────────────────────────────────────────────
 
 
 class AccountDialog:
-    """Modal dialog for creating a new account.
+    """Modal dialog for creating or editing an account.
 
-    Opens a Toplevel window with fields for:
+    Pass ``edit_acct`` and ``edit_acct_id`` to pre-populate for editing.
+
+    Fields:
         • Parent account (combobox)
         • Account name
         • Subtype (optional combobox)
@@ -44,9 +46,13 @@ class AccountDialog:
         parent: tk.Widget,
         manager: AccountManager,
         on_success: Callable[[], None],
+        edit_acct: Account | None = None,
+        edit_acct_id: int | None = None,
     ):
         self.manager = manager
         self.on_success = on_success
+        self.edit_acct = edit_acct
+        self.edit_acct_id = edit_acct_id
         self._build(parent)
 
     # ── Widget layout ──────────────────────────────────────────
@@ -85,14 +91,27 @@ class AccountDialog:
                 continue
             parent_choices[f"{acct.name} ({acct.acct_type})"] = aid
         parent_combo["values"] = list(parent_choices.keys())
-        if parent_choices:
-            parent_combo.current(0)
+
+        # Pre-select parent for edit mode
+        if self.edit_acct:
+            parent_label = f"{self.edit_acct.name} ({self.edit_acct.acct_type})"
+            # Find the parent by looking up self.edit_acct.parent in the choices
+            for lbl, aid in parent_choices.items():
+                if aid == self.edit_acct.parent:
+                    parent_combo.set(lbl)
+                    break
+            else:
+                if parent_choices:
+                    parent_combo.current(0)
+        else:
+            if parent_choices:
+                parent_combo.current(0)
 
         # ── Account name ──────────────────────────────────────
         ttk.Label(frame, text="Account Name:").grid(
             row=1, column=0, sticky=tk.W, pady=2,
         )
-        name_var = tk.StringVar()
+        name_var = tk.StringVar(value=self.edit_acct.name if self.edit_acct else "")
         name_entry = ttk.Entry(frame, textvariable=name_var, width=35)
         name_entry.grid(row=1, column=1, sticky=tk.EW, pady=2, columnspan=2)
 
@@ -151,7 +170,12 @@ class AccountDialog:
             acct_type = type_var.get().strip() or None
 
             try:
-                self.manager.add_account(name, pid, acct_type, account_subtype=subtype)
+                if is_edit and self.edit_acct_id is not None:
+                    self.manager.update_account(
+                        self.edit_acct_id, name, pid, acct_type, subtype,
+                    )
+                else:
+                    self.manager.add_account(name, pid, acct_type, account_subtype=subtype)
                 self.on_success()
                 dialog.destroy()
             except ValueError as e:
@@ -343,9 +367,19 @@ class TransactionDialog:
             memo_var.set("")
             acct_combo.focus()
 
+        # Delete selected split
+        def _remove_split() -> None:
+            selected = self.split_tree.selection()
+            if selected:
+                self.split_tree.delete(selected[0])
+
         ttk.Button(add_frame, text="Add Split", command=_add_split).grid(
             row=0, column=8, padx=4,
         )
+        ttk.Button(add_frame, text="Remove", command=_remove_split).grid(
+            row=0, column=9, padx=4,
+        )
+        self.split_tree.bind("<Delete>", lambda e: _remove_split())
 
         # ── Pre-populate splits when editing ─────────────────
         if self.edit_txn:

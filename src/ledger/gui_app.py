@@ -493,6 +493,43 @@ class LedgerGUI(tk.Tk):
     def _dialog_add_account(self) -> None:
         AccountDialog(self, self.manager, self._refresh_all)
 
+    def _dialog_edit_account(self, acct_id: int) -> None:
+        acct = self.manager.accounts.get(acct_id)
+        if acct is None:
+            from tkinter import messagebox
+            messagebox.showerror("Error", f"Account #{acct_id} not found")
+            return
+        self.after(0, lambda: AccountDialog(
+            self, self.manager, self._refresh_all,
+            edit_acct=acct, edit_acct_id=acct_id,
+        ))
+
+    def _dialog_delete_account(self, acct_id: int) -> None:
+        from tkinter import messagebox
+        acct = self.manager.accounts.get(acct_id)
+        if not acct:
+            return
+        children = sum(1 for a in self.manager.accounts.values() if a.parent == acct_id)
+        if children > 0:
+            messagebox.showerror(
+                "Cannot Delete",
+                f"'{acct.name}' has {children} sub-account(s).\n"
+                "Delete or re-parent them first.",
+            )
+            return
+        if messagebox.askyesno(
+            "Delete Account",
+            f"Delete account '{acct.name}'?\n\n"
+            "Transactions referencing this account will remain\n"
+            "but their split will show '?' for this account.\n\n"
+            "This cannot be undone.",
+        ):
+            try:
+                self.manager.delete_account(acct_id)
+                self._refresh_all()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
     def _dialog_add_transaction(self) -> None:
         TransactionDialog(self, self.manager, self._refresh_all)
 
@@ -612,7 +649,7 @@ class LedgerGUI(tk.Tk):
         self.destroy()
 
     def _tree_right_click(self, event: object) -> None:
-        """Show account details on right-click in the account tree."""
+        """Show context menu for an account (Edit / Delete / Details)."""
         item = self.account_tree.identify_row(event.y)  # type: ignore[attr-defined]
         if not item:
             return
@@ -624,7 +661,31 @@ class LedgerGUI(tk.Tk):
         if not acct:
             return
 
+        # Select this row
+        self.account_tree.selection_set(item)
+
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="Edit Account",
+            command=lambda: self._dialog_edit_account(acct_id),
+        )
+        menu.add_command(
+            label="Account Details",
+            command=lambda: self._show_account_details(acct_id),
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Delete Account",
+            command=lambda: self._dialog_delete_account(acct_id),
+        )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _show_account_details(self, acct_id: int) -> None:
+        """Show a read-only info dialog about an account."""
         from tkinter import messagebox
+        acct = self.manager.accounts.get(acct_id)
+        if not acct:
+            return
 
         raw = acct.get_balance()
         display = self.manager.get_display_balance(acct_id)
