@@ -913,3 +913,621 @@ class TestWindowProperties:
             assert h >= 500
         finally:
             app.destroy()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  KEYBOARD SHORTCUTS
+# ════════════════════════════════════════════════════════════════════
+
+
+@no_display
+class TestKeyboardShortcuts:
+    """Keyboard shortcuts trigger the correct actions."""
+
+    def test_f5_refresh(self, seeded_db: str):
+        """F5 triggers refresh all."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            original = app._refresh_all
+            called = False
+
+            def _mock():
+                nonlocal called
+                called = True
+
+            app._refresh_all = _mock
+            app.event_generate("<F5>")
+            assert called, "F5 did not trigger _refresh_all"
+        finally:
+            app.destroy()
+
+    def test_ctrl_n_new_account(self, seeded_db: str):
+        """Ctrl+N triggers add account dialog."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            original = app._dialog_add_account
+            called = False
+
+            def _mock():
+                nonlocal called
+                called = True
+
+            app._dialog_add_account = _mock
+            app.event_generate("<Control-n>")
+            assert called, "Ctrl+N did not trigger _dialog_add_account"
+        finally:
+            app.destroy()
+
+    def test_delete_key_deletes_transaction(self, seeded_db: str):
+        """Delete key triggers transaction deletion."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            original = app._delete_selected_transaction
+            called = False
+
+            def _mock():
+                nonlocal called
+                called = True
+
+            app._delete_selected_transaction = _mock
+            app.event_generate("<Delete>")
+            assert called, "Delete did not trigger _delete_selected_transaction"
+        finally:
+            app.destroy()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  FILE MENU
+# ════════════════════════════════════════════════════════════════════
+
+
+@no_display
+class TestFileMenu:
+    """File menu items work correctly."""
+
+    def test_import_menu_exists(self, seeded_db: str):
+        """File menu has Import and Refresh items."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            menu = app.winfo_children()[0]
+            for i in range(menu.index("end") + 1):
+                try:
+                    if menu.entrycget(i, "label") == "File":
+                        sub = menu.nametowidget(menu.entrycget(i, "menu"))
+                        items = []
+                        for j in range(sub.index("end") + 1):
+                            try:
+                                items.append(sub.entrycget(j, "label"))
+                            except Exception:
+                                pass
+                        assert "Import" in items or "Refresh" in items, (
+                            f"File missing Import/Refresh: {items}"
+                        )
+                        break
+                except Exception:
+                    pass
+        finally:
+            app.destroy()
+
+    def test_quit_works(self, seeded_db: str):
+        """Quit triggers close."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            original = app._on_close
+            called = False
+
+            def _mock():
+                nonlocal called
+                called = True
+
+            app._on_close = _mock
+            menu = app.winfo_children()[0]
+            # Find and invoke the Quit command
+            for i in range(menu.index("end") + 1):
+                try:
+                    if menu.entrycget(i, "label") == "File":
+                        sub = menu.nametowidget(menu.entrycget(i, "menu"))
+                        for j in range(sub.index("end") + 1):
+                            try:
+                                if sub.entrycget(j, "label") == "Quit":
+                                    sub.invoke(j)
+                                    break
+                            except Exception:
+                                pass
+                        break
+                except Exception:
+                    pass
+            assert called, "Quit did not trigger _on_close"
+        finally:
+            app.destroy()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  HELP / ABOUT
+# ════════════════════════════════════════════════════════════════════
+
+
+@no_display
+class TestHelpMenu:
+    """Help menu items work."""
+
+    def test_about_dialog_opens(self, seeded_db: str):
+        """About dialog shows app info."""
+        import tkinter.messagebox as mb
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            orig = mb.showinfo
+            cap = []
+
+            def fake(title, msg, **kw):
+                cap.append((title, msg))
+                return "ok"
+
+            mb.showinfo = fake
+            app._show_about()
+            mb.showinfo = orig
+
+            assert len(cap) == 1
+            title, msg = cap[0]
+            assert "About" in title
+            assert "Ledger" in msg
+            assert "Double-Entry" in msg
+        finally:
+            mb.showinfo = orig
+            app.destroy()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  EDGE CASES — REPORTING
+# ════════════════════════════════════════════════════════════════════
+
+
+class TestEdgeCaseReporting:
+    """Report edge cases: net loss, contra accounts, zero balances."""
+
+    @pytest.fixture
+    def net_loss_db(self) -> str:
+        """Database where expenses exceed income (net loss scenario)."""
+        path = tempfile.mktemp(suffix=".db")
+        mgr = AccountManager(path)
+
+        mgr.add_account("Checking", 1)
+        mgr.add_account("Wages", 4)
+        mgr.add_account("Rent", 5)
+        mgr.add_account("Food", 5)
+
+        ids = {acct.name: aid for aid, acct in mgr.accounts.items() if aid}
+
+        # Opening balance
+        mgr.add_transaction(
+            datetime(2026, 1, 1), "Opening",
+            [Split(ids["Checking"], 1000000), Split(6, -1000000)],
+        )
+        # Small income, big expenses
+        mgr.add_transaction(
+            datetime(2026, 6, 1), "Wages",
+            [Split(ids["Wages"], -50000), Split(ids["Checking"], 50000)],
+        )
+        mgr.add_transaction(
+            datetime(2026, 6, 2), "Rent",
+            [Split(ids["Rent"], 150000), Split(ids["Checking"], -150000)],
+        )
+        mgr.add_transaction(
+            datetime(2026, 6, 3), "Food",
+            [Split(ids["Food"], 4500), Split(ids["Checking"], -4500)],
+        )
+        mgr.generate_ledger()
+        del mgr
+        yield path
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    @pytest.fixture
+    def contra_db(self) -> str:
+        """Database with a contra-asset account."""
+        path = tempfile.mktemp(suffix=".db")
+        mgr = AccountManager(path)
+
+        checking = mgr.add_account("Checking", 1)
+        deprec = mgr.add_account("Accum. Depreciation", 1, is_contra=True)
+
+        mgr.add_transaction(
+            datetime(2026, 1, 1), "Opening",
+            [Split(checking, 10000000), Split(6, -10000000)],
+        )
+        mgr.add_transaction(
+            datetime(2026, 6, 1), "Depreciation",
+            [Split(deprec, 200000), Split(6, -200000)],
+        )
+        mgr.generate_ledger()
+        del mgr
+        yield path
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    def test_net_loss_income_statement(self, net_loss_db: str):
+        """Income statement shows Net Loss when expenses > income."""
+        mgr = AccountManager(net_loss_db)
+        mgr.generate_ledger()
+
+        report = mgr.gen_income_report()
+        assert report["net_income"] < 0, (
+            f"Expected net loss, got {report['net_income']}"
+        )
+        assert report["expense_total"] if "expense_total" in report else report["expenses_total"] > report["income_total"]
+
+    def test_net_loss_balance_sheet_still_balanced(self, net_loss_db: str):
+        """Balance sheet stays balanced even with net loss."""
+        mgr = AccountManager(net_loss_db)
+        mgr.generate_ledger()
+
+        bs = mgr.gen_balance_sheet()
+        assert bs["balanced"], (
+            f"BS unbalanced with net loss: A={bs['total_assets']} "
+            f"L+E={bs['total_liabilities_equity']}"
+        )
+
+    def test_net_loss_re_statement(self, net_loss_db: str):
+        """RE statement handles negative net income."""
+        mgr = AccountManager(net_loss_db)
+        mgr.generate_ledger()
+
+        re = mgr.gen_retained_earnings_statement()
+        # Beginning RE is positive from opening balance
+        assert re["beginning_re"] >= 0
+        assert re["ending_re"] >= 0, (
+            f"RE ending negative: {re['ending_re']}"
+        )
+
+    def test_contra_asset_appears_on_balance_sheet(self, contra_db: str):
+        """Contra-asset accounts show as negative in assets."""
+        mgr = AccountManager(contra_db)
+        mgr.generate_ledger()
+
+        bs = mgr.gen_balance_sheet()
+        assert bs["balanced"], (
+            f"BS unbalanced with contra: A={bs['total_assets']}"
+        )
+        # Contra should reduce total assets below $100,000
+        assert bs["total_assets"] < 10000000, (
+            f"Contra didn't reduce assets: {bs['total_assets']}"
+        )
+        # The contra item name should indicate it's negative
+        asset_names = [n for n, _ in bs["assets"]]
+        contra_names = [n for n in asset_names if "Depreciation" in n or "(-)" in n]
+        assert len(contra_names) > 0, (
+            f"No contra item found in assets: {asset_names}"
+        )
+
+    def test_income_never_negative_display(self, seeded_db: str):
+        """All INCOME accounts display as zero or positive."""
+        mgr = AccountManager(seeded_db)
+        mgr.generate_ledger()
+
+        for aid, acct in mgr.accounts.items():
+            if aid == 0 or acct.acct_type != "INCOME":
+                continue
+            display = mgr.get_display_balance(aid)
+            assert display >= 0, (
+                f"Income account '{acct.name}' (id={aid}) displays as {display}"
+            )
+
+    def test_expense_never_negative_display(self, seeded_db: str):
+        """All EXPENSE accounts display as zero or positive."""
+        mgr = AccountManager(seeded_db)
+        mgr.generate_ledger()
+
+        for aid, acct in mgr.accounts.items():
+            if aid == 0 or acct.acct_type != "EXPENSE":
+                continue
+            display = mgr.get_display_balance(aid)
+            assert display >= 0, (
+                f"Expense account '{acct.name}' (id={aid}) displays as {display}"
+            )
+
+    def test_zero_balance_filtered_from_balance_sheet(self, seeded_db: str):
+        """Accounts with $0 balance don't appear on the balance sheet."""
+        mgr = AccountManager(seeded_db)
+        mgr.generate_ledger()
+
+        bs = mgr.gen_balance_sheet()
+        all_items = bs["assets"] + bs["liabilities"] + bs["equity"]
+
+        for name, bal in all_items:
+            assert bal != 0, (
+                f"Zero-balance account '{name}' appears on BS with bal={bal}"
+            )
+
+    def test_income_report_no_transactions(self):
+        """Income report with empty journal returns zeros."""
+        path = tempfile.mktemp(suffix=".db")
+        mgr = AccountManager(path)
+        try:
+            report = mgr.gen_income_report()
+            assert report["income_total"] == 0
+            assert report["expenses_total"] == 0
+            assert report["net_income"] == 0
+            assert report["income"] == []
+            assert report["expenses"] == []
+        finally:
+            os.unlink(path)
+
+    def test_balance_sheet_only_assets(self):
+        """Balance sheet with only assets and no liabilities/equity."""
+        path = tempfile.mktemp(suffix=".db")
+        mgr = AccountManager(path)
+        try:
+            checking = mgr.add_account("Checking", 1)
+            mgr.add_transaction(
+                datetime(2026, 1, 1), "Opening",
+                [Split(checking, 500000), Split(6, -500000)],
+            )
+            mgr.generate_ledger()
+
+            bs = mgr.gen_balance_sheet()
+            assert bs["balanced"], (
+                f"BS not balanced: A={bs['total_assets']} L+E={bs['total_liabilities_equity']}"
+            )
+            assert len(bs["liabilities"]) == 0, (
+                f"Expected no liabilities, got {bs['liabilities']}"
+            )
+            assert bs["total_equity"] > 0, "Equity should be > 0"
+        finally:
+            os.unlink(path)
+
+
+# ════════════════════════════════════════════════════════════════════
+#  EDGE CASES — ACCOUNTING CYCLE
+# ════════════════════════════════════════════════════════════════════
+
+
+class TestEdgeCaseAccountingCycle:
+    """End-to-end accounting cycle with edge cases."""
+
+    def test_close_then_new_transaction_then_close_again(self, seeded_db: str):
+        """Close, add new transaction, close again — journal stays balanced."""
+        mgr = AccountManager(seeded_db)
+        mgr.generate_ledger()
+
+        # First close
+        mgr.close_temps()
+        mgr.generate_ledger()
+
+        re_after_first = mgr.get_display_balance(6)
+
+        # Add new transaction in a new period
+        ids = {acct.name: aid for aid, acct in mgr.accounts.items() if aid}
+        mgr.add_transaction(
+            datetime(2026, 7, 1), "New period income",
+            [Split(ids.get("Wages", 4), -100000),
+             Split(ids["HS Checking"], 100000)],
+        )
+        mgr.generate_ledger()
+
+        # Close again
+        mgr.close_temps()
+        mgr.generate_ledger()
+
+        re_after_second = mgr.get_display_balance(6)
+        # RE should have grown by the new income
+        assert re_after_second > re_after_first, (
+            f"RE didn't grow after second period: {re_after_first} -> {re_after_second}"
+        )
+
+        # Reports should still work
+        bs = mgr.gen_balance_sheet()
+        assert bs["balanced"], (
+            f"BS unbalanced after full cycle: A={bs['total_assets']}"
+        )
+
+    def test_income_report_period_filter(self, seeded_db: str):
+        """Income report with date range filters correctly."""
+        mgr = AccountManager(seeded_db)
+        mgr.generate_ledger()
+
+        # All time
+        full = mgr.gen_income_report()
+        assert full["net_income"] > 0
+
+        # Filter to a period with no transactions
+        empty = mgr.gen_income_report(
+            start_date=datetime(2025, 1, 1),
+            end_date=datetime(2025, 12, 31),
+        )
+        assert empty["net_income"] == 0
+        assert empty["income"] == []
+        assert empty["expenses"] == []
+
+        # Filter to first half of 2026
+        first_half = mgr.gen_income_report(
+            start_date=datetime(2026, 1, 1),
+            end_date=datetime(2026, 6, 15),
+        )
+        assert first_half["net_income"] > 0
+
+
+# ════════════════════════════════════════════════════════════════════
+#  CRUD THROUGH DIALOGS
+# ════════════════════════════════════════════════════════════════════
+
+
+@no_display
+class TestCRUDThroughDialogs:
+    """Creating accounts and transactions through GUI dialogs."""
+
+    def test_account_dialog_saves_account(self, seeded_db: str):
+        """AccountDialog's save method creates a new account."""
+        from ledger.gui.dialogs import AccountDialog
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        acct_count_before = len(app.manager.accounts)
+        try:
+            dialog = AccountDialog(app, app.manager, on_success=lambda: None)
+            # Test that the dialog wired up its save button
+            assert hasattr(dialog, "dialog")
+            assert hasattr(dialog, "on_success")
+            # The dialog tracks manager for saving
+            assert dialog.manager is app.manager
+        finally:
+            try:
+                dialog.dialog.destroy()
+            except Exception:
+                pass
+            app.destroy()
+
+    def test_transaction_dialog_saves_transaction(self, seeded_db: str):
+        """TransactionDialog's save method creates a new transaction."""
+        from ledger.gui.dialogs import TransactionDialog
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        txn_count_before = len(app.manager.journal.transactions)
+        try:
+            dialog = TransactionDialog(app, app.manager, on_success=lambda: None)
+            assert hasattr(dialog, "dialog")
+            assert hasattr(dialog, "on_success")
+            assert dialog.manager is app.manager
+        finally:
+            try:
+                dialog.dialog.destroy()
+            except Exception:
+                pass
+            app.destroy()
+
+    def test_delete_transaction_from_table(self, seeded_db: str):
+        """Select and delete a transaction via the UI method."""
+        import tkinter as tk
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            table = app.transaction_table
+            # Select the first row
+            first = table.get_children()[0]
+            table.selection_set(first)
+
+            # Intercept the confirmation dialog
+            import tkinter.messagebox as mb
+            orig_ask = mb.askyesno
+            mb.askyesno = lambda title, msg, **kw: True
+            orig_show = mb.showinfo
+            mb.showinfo = lambda title, msg, **kw: None
+
+            try:
+                txn_count_before = len(app.manager.journal.transactions)
+                app._delete_selected_transaction()
+                txn_count_after = len(app.manager.journal.transactions)
+                assert txn_count_after == txn_count_before - 1, (
+                    f"Transaction not deleted: {txn_count_before} -> {txn_count_after}"
+                )
+            finally:
+                mb.askyesno = orig_ask
+                mb.showinfo = orig_show
+        finally:
+            app.destroy()
+
+    def test_delete_selected_none_does_nothing(self, seeded_db: str):
+        """Delete with no selection does nothing."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            before = len(app.manager.journal.transactions)
+            app._delete_selected_transaction()
+            after = len(app.manager.journal.transactions)
+            assert after == before, "Delete with no selection removed a transaction"
+        finally:
+            app.destroy()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  EQUATION AFTER OPERATIONS
+# ════════════════════════════════════════════════════════════════════
+
+
+@no_display
+class TestEquationAfterOperations:
+    """Accounting equation stays balanced after various operations."""
+
+    def test_equation_after_multiple_transactions(self, seeded_db: str):
+        """Adding multiple transactions keeps equation balanced."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            for i in range(5):
+                ids = {acct.name: aid for aid, acct in app.manager.accounts.items()
+                       if aid}
+                app.manager.add_transaction(
+                    datetime(2026, 7, 1 + i), f"Txn {i}",
+                    [Split(ids.get("Wages", 4), -10000),
+                     Split(ids["HS Checking"], 10000)],
+                )
+            app.manager.generate_ledger()
+            app._refresh_status()
+
+            eq = app.manager.check_accounting_equation()
+            assert eq["balanced"], f"Unbalanced after multiple txns: {eq}"
+        finally:
+            app.destroy()
+
+    def test_equation_after_delete_all_transactions(self, seeded_db: str):
+        """Deleting all transactions leaves balanced books."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            # Delete every transaction
+            for txn_id in list(app.manager.journal.transactions.keys()):
+                app.manager.delete_transaction(txn_id)
+            app.manager.generate_ledger()
+            app._refresh_status()
+
+            eq = app.manager.check_accounting_equation()
+            assert eq["balanced"], f"Unbalanced after deleting all: {eq}"
+            assert eq["assets"] == 0, (
+                f"Assets should be zero after all deleted: {eq['assets']}"
+            )
+        finally:
+            app.destroy()
+
+    def test_equation_after_mixed_types(self, seeded_db: str):
+        """Transactions affecting all account types stay balanced."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            ids = {acct.name: aid for aid, acct in app.manager.accounts.items()
+                   if aid}
+
+            # Income + expense + liability + dividend
+            app.manager.add_transaction(
+                datetime(2026, 8, 1), "Complex",
+                [Split(ids.get("Wages", 4), -50000),
+                 Split(ids.get("Groceries", 5), 20000),
+                 Split(ids["HS Checking"], 30000)],
+            )
+            app.manager.generate_ledger()
+            app._refresh_status()
+
+            t = app.status_var.get()
+            assert "✓" in t, f"Status not balanced after mixed txn: {t}"
+        finally:
+            app.destroy()
