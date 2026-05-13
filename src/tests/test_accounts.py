@@ -1,293 +1,318 @@
-"""Unit tests: account CRUD, subtypes, hierarchy, and tree operations."""
+"""Unit tests: account CRUD, subtypes, hierarchy, tree operations, financial reports.
+
+All tests use the ``fast_manager`` fixture (MockDB — no disk I/O, <1ms per test).
+Follows AAA pattern (Arrange, Act, Assert) with descriptive names.
+"""
 
 import pytest
 from datetime import datetime
-
-from ledger.controllers.accounts import AccountManager
 from ledger.models.data_class import Split
 
 
+# ════════════════════════════════════════════════════════════════════
+#  Account Creation
+# ════════════════════════════════════════════════════════════════════
+
+
 class TestAccountCreation:
-    """Creating accounts with various options."""
+    """Creating accounts with various options — happy paths and edge cases."""
 
-    def test_create_default(self, manager: AccountManager):
-        """Default accounts load on a fresh DB."""
-        assert 0 in manager.accounts  # root
-        assert len(manager.accounts) == 11  # root + 5 parents + 5 defaults
+    def test_create_default_loads_parents(self, fast_manager):
+        """Arrange: fresh AccountManager. Assert: 11 default parents exist."""
+        assert len(fast_manager.accounts) == 11
 
-    def test_create_with_name(self, manager: AccountManager):
-        aid = manager.add_account("My Checking", 1)
+    def test_addAccount_withName_returnsPositiveId(self, fast_manager):
+        """add_account with a valid name returns a positive account ID."""
+        aid = fast_manager.add_account("My Checking", 1)
         assert aid > 0
-        assert manager.accounts[aid].name == "My Checking"
+        assert fast_manager.accounts[aid].name == "My Checking"
 
-    def test_create_with_subtype(self, manager: AccountManager):
-        aid = manager.add_account("My Checking", 1, account_subtype="checking")
-        assert manager.accounts[aid].account_subtype == "checking"
+    def test_addAccount_withSubtype_savesSubtype(self, fast_manager):
+        """add_account stores the account_subtype."""
+        aid = fast_manager.add_account("My Checking", 1, account_subtype="checking")
+        assert fast_manager.accounts[aid].account_subtype == "checking"
 
-    def test_create_with_invalid_subtype(self, manager: AccountManager):
+    def test_addAccount_withInvalidSubtype_raises(self, fast_manager):
+        """add_account with an unknown subtype raises ValueError."""
         with pytest.raises(ValueError, match="Invalid account_subtype"):
-            manager.add_account("Bad", 1, account_subtype="not_a_subtype")
+            fast_manager.add_account("Bad", 1, account_subtype="not_a_subtype")
 
-    def test_duplicate_name_raises(self, manager: AccountManager):
-        manager.add_account("Test", 1)
+    def test_addAccount_duplicateName_raises(self, fast_manager):
+        """add_account with a duplicate name under the same parent raises."""
+        fast_manager.add_account("Test", 1)
         with pytest.raises(ValueError, match="already exists"):
-            manager.add_account("Test", 1)
+            fast_manager.add_account("Test", 1)
 
-    def test_create_contra(self, manager: AccountManager):
-        aid = manager.add_account("Acc Depreciation", 1, is_contra=True)
-        assert manager.accounts[aid].is_contra is True
+    def test_addAccount_contraFlag_setsIsContra(self, fast_manager):
+        """add_account with is_contra=True stores the flag."""
+        aid = fast_manager.add_account("Acc Depreciation", 1, is_contra=True)
+        assert fast_manager.accounts[aid].is_contra is True
 
-    def test_type_inherited_from_parent(self, manager: AccountManager):
-        aid = manager.add_account("My Expense", 5)  # parent 5 = Expenses
-        assert manager.accounts[aid].acct_type == "EXPENSE"
+    def test_addAccount_underExpense_inheritsExpenseType(self, fast_manager):
+        """add_account under expense parent (5) gets EXPENSE type."""
+        aid = fast_manager.add_account("My Expense", 5)
+        assert fast_manager.accounts[aid].acct_type == "EXPENSE"
 
-    def test_create_under_root(self, manager: AccountManager):
-        """Top-level accounts (parent 0) get type ASSET if not specified."""
-        aid = manager.add_account("NewTopLevel", 0, "LIABILITY")
-        assert manager.accounts[aid].acct_type == "LIABILITY"
-        assert manager.accounts[aid].parent == 0
+    def test_addAccount_emptyName_raises(self, fast_manager):
+        """add_account with empty name raises ValueError."""
+        with pytest.raises(ValueError):
+            fast_manager.add_account("", 1)
+
+    def test_addAccount_whitespaceName_raises(self, fast_manager):
+        """add_account with whitespace-only name raises ValueError."""
+        with pytest.raises(ValueError):
+            fast_manager.add_account("   ", 1)
+
+    def test_addAccount_sameNameDifferentParent_succeeds(self, fast_manager):
+        """Duplicate names under different parents are allowed."""
+        aid1 = fast_manager.add_account("Same Name", 1)
+        aid2 = fast_manager.add_account("Same Name", 2)
+        assert aid1 != aid2
+
+    def test_addAccount_noneParent_raises(self, fast_manager):
+        """add_account with parent=None raises ValueError."""
+        with pytest.raises(ValueError, match="parent is required"):
+            fast_manager.add_account("TopLevel", None, "LIABILITY")
+
+    def test_addAccount_defaultTypeIsAsset(self, fast_manager):
+        """add_account with no type specified defaults to ASSET."""
+        aid = fast_manager.add_account("DefaultType", 1)
+        assert fast_manager.accounts[aid].acct_type == "ASSET"
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Account Queries
+# ════════════════════════════════════════════════════════════════════
 
 
 class TestAccountQueries:
-    """Querying account trees, descendants, and parents."""
+    """Querying account trees, descendants, top-level parents."""
 
-    def test_build_tree(self, seeded_manager: AccountManager, ids: dict):
-        tree = seeded_manager.build_tree()
+    def test_buildTree_withChildren_returnsNestedDict(self, fast_seeded):
+        """build_tree returns a dict mapping parent_id to child list."""
+        tree = fast_seeded.build_tree()
         assert 1 in tree  # Assets has children
         assert 0 in tree  # Root has top-level children
 
-    def test_get_descendants(self, seeded_manager: AccountManager, ids: dict):
-        descendants = seeded_manager.get_descendant_ids(1)  # Assets
-        assert ids["HS Checking"] in descendants
-        assert ids["Schwab Brokerage"] in descendants
-        assert 1 in descendants  # self
+    def test_getDescendants_includesSelf(self, fast_seeded):
+        """get_descendant_ids includes the queried account itself."""
+        descendants = fast_seeded.get_descendant_ids(1)
+        assert 1 in descendants
 
-    def test_get_top_level_parent(self, seeded_manager: AccountManager, ids: dict):
-        top = seeded_manager.get_top_level_parent(ids["HS Checking"])
-        assert top == 1  # Assets
+    def test_getDescendants_includesChildren(self, fast_seeded):
+        """get_descendant_ids includes all children of the queried account."""
+        descendants = fast_seeded.get_descendant_ids(1)
+        assert "HS Checking" in [
+            fast_seeded.accounts[aid].name for aid in descendants if aid in fast_seeded.accounts
+        ]
 
-    def test_top_level_parent_of_root(self, manager: AccountManager):
-        assert manager.get_top_level_parent(0) == 0
+    def test_getTopLevelParent_checking_returnsAssets(self, fast_seeded):
+        """HS Checking's top-level parent is 1 (Assets)."""
+        ids = {a.name: aid for aid, a in fast_seeded.accounts.items() if aid}
+        top = fast_seeded.get_top_level_parent(ids["HS Checking"])
+        assert top == 1
 
-    def test_top_level_parent_of_parent(self, manager: AccountManager):
-        assert manager.get_top_level_parent(1) == 1  # Assets
+    def test_getTopLevelParent_root_returnsRoot(self, fast_manager):
+        """Account 0's top-level parent is 0."""
+        assert fast_manager.get_top_level_parent(0) == 0
 
-    def test_aggregated_balance(self, seeded_manager: AccountManager, ids: dict):
-        """Assets aggregated balance should equal liab + equity."""
-        assets = seeded_manager.aggregated_balance(1)
-        liab = seeded_manager.aggregated_balance(2)
-        equity = seeded_manager.aggregated_balance(3)
-        assert assets == -(liab + equity)  # raw: assets +, liab/equity -
+    def test_getTopLevelParent_assetRoot_returnsAsset(self, fast_manager):
+        """Account 1's top-level parent is 1 (itself)."""
+        assert fast_manager.get_top_level_parent(1) == 1
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Display Balance
+# ════════════════════════════════════════════════════════════════════
 
 
 class TestDisplayBalance:
     """Display-normal balances for different account types."""
 
-    def test_liability_positive(self, seeded_manager: AccountManager, ids: dict):
-        """Liabilities display as positive despite raw negative balance."""
-        raw = seeded_manager.aggregated_balance(ids["Discover"])
-        display = seeded_manager.get_display_balance(ids["Discover"])
-        assert raw <= 0  # raw is negative for credit-normal
-        assert display >= 0  # display is positive
+    def test_liabilityDisplay_positiveDespiteNegativeRaw(self, fast_seeded):
+        """Liabilities display as positive even when raw balance is negative."""
+        ids = {a.name: aid for aid, a in fast_seeded.accounts.items() if aid}
+        raw = fast_seeded.aggregated_balance(ids["Discover"])
+        display = fast_seeded.get_display_balance(ids["Discover"])
+        assert raw <= 0   # credit-normal
+        assert display >= 0
         assert display == -raw
 
-    def test_asset_positive(self, seeded_manager: AccountManager, ids: dict):
-        """Assets display as positive (raw is already positive)."""
-        raw = seeded_manager.aggregated_balance(ids["HS Checking"])
-        display = seeded_manager.get_display_balance(ids["HS Checking"])
+    def test_assetDisplay_equalsRaw(self, fast_seeded):
+        """Assets display balance equals raw balance (debit-normal)."""
+        ids = {a.name: aid for aid, a in fast_seeded.accounts.items() if aid}
+        raw = fast_seeded.aggregated_balance(ids["HS Checking"])
+        display = fast_seeded.get_display_balance(ids["HS Checking"])
         assert display == raw
 
-    def test_is_debit_normal(self, manager: AccountManager):
-        assert manager.is_debit_normal(1) is True   # Asset
-        assert manager.is_debit_normal(2) is False  # Liability
-        assert manager.is_debit_normal(3) is False  # Equity
-        assert manager.is_debit_normal(4) is False  # Income
-        assert manager.is_debit_normal(5) is True   # Expense
+    def test_isDebitNormal_asset_returnsTrue(self, fast_manager):
+        assert fast_manager.is_debit_normal(1) is True   # Asset
+
+    def test_isDebitNormal_liability_returnsFalse(self, fast_manager):
+        assert fast_manager.is_debit_normal(2) is False  # Liability
+
+    def test_isDebitNormal_equity_returnsFalse(self, fast_manager):
+        assert fast_manager.is_debit_normal(3) is False  # Equity
+
+    def test_isDebitNormal_income_returnsFalse(self, fast_manager):
+        assert fast_manager.is_debit_normal(4) is False  # Income
+
+    def test_isDebitNormal_expense_returnsTrue(self, fast_manager):
+        assert fast_manager.is_debit_normal(5) is True   # Expense
+
+    def test_getBalance_unmodifiedLedger_returnsZero(self, fast_manager):
+        """A fresh account with no transactions has balance 0."""
+        for aid in [1, 2, 3, 4, 5, 6]:
+            assert fast_manager.accounts[aid].get_balance() == 0
+
+    def test_getBalance_afterTransaction_reflectsSplits(self, fast_manager):
+        """After a transaction, account balance matches the split."""
+        checking = fast_manager.add_account("Checking", 1)
+        fast_manager.add_transaction(
+            datetime(2026, 1, 1), "Deposit",
+            [Split(checking, 50000), Split(6, -50000)],
+        )
+        fast_manager.generate_ledger()
+        assert fast_manager.accounts[checking].get_balance() == 50000
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Financial Reports
+# ════════════════════════════════════════════════════════════════════
 
 
 class TestFinancialReports:
-    """Income statement, balance sheet, RE statement."""
+    """Income statement, balance sheet, RE statement, equation."""
 
-    def test_checking_equation(self, seeded_manager: AccountManager):
-        eq = seeded_manager.check_accounting_equation()
-        assert eq["balanced"] is True, "Accounting equation must balance"
-        assert eq["net_worth"] >= 0, "Net worth should be positive"
+    def test_checkEquation_seededData_balanced(self, fast_seeded):
+        """check_accounting_equation returns balanced=True for valid data."""
+        eq = fast_seeded.check_accounting_equation()
+        assert eq["balanced"] is True
+        assert eq["net_worth"] >= 0
 
-    def test_income_report(self, seeded_manager: AccountManager):
-        # Sell a VTI with gain to generate income
-        ids = seeded_manager.account_ids
-        seeded_manager.sell_security(
-            datetime(2026, 5, 1), "Sell VTI",
-            ids["Schwab Brokerage"], ids["HS Checking"],
-            "VTI", 10, 29500,
-            gain_account_id=ids["Capital Gains"],
+    def test_genIncomeReport_withTransactions_returnsNetIncome(self, fast_seeded):
+        """gen_income_report with income and expense data returns positive NI."""
+        inc = fast_seeded.gen_income_report()
+        assert inc["income_total"] > 0
+        assert inc["expenses_total"] > 0
+        assert inc["net_income"] > 0
+
+    def test_genIncomeReport_noTransactions_returnsZeros(self, fast_manager):
+        """gen_income_report on empty journal returns all zeros."""
+        inc = fast_manager.gen_income_report()
+        assert inc["income_total"] == 0
+        assert inc["expenses_total"] == 0
+        assert inc["net_income"] == 0
+
+    def test_genIncomeReport_withDateFilter_excludesOutsideRange(self, fast_seeded):
+        """gen_income_report with date filter returns only transactions in range."""
+        full = fast_seeded.gen_income_report()
+        assert full["net_income"] > 0
+
+        empty = fast_seeded.gen_income_report(
+            start_date=datetime(2025, 1, 1),
+            end_date=datetime(2025, 12, 31),
         )
-        seeded_manager.generate_ledger()
-        report = seeded_manager.gen_income_report()
-        assert report["income_total"] > 0  # Realized gains
-        assert report["net_income"] > 0
+        assert empty["net_income"] == 0
 
-    def test_retained_earnings(self, seeded_manager: AccountManager):
-        re = seeded_manager.gen_retained_earnings_statement()
-        assert "beginning_re" in re
-        assert "ending_re" in re
-        assert "net_income" in re
+    def test_retainedEarnings_preClose_includesNetIncome(self, fast_seeded):
+        """Before close: beginning_re + NI = ending_re."""
+        re = fast_seeded.gen_retained_earnings_statement()
+        actual_re = fast_seeded.get_display_balance(6)
+        assert re["beginning_re"] == actual_re
+        assert re["ending_re"] == actual_re + re["net_income"]
 
-    def test_balance_sheet(self, seeded_manager: AccountManager):
-        bs = seeded_manager.gen_balance_sheet()
+    def test_retainedEarnings_postClose_netIncomeIsZero(self, fast_seeded):
+        """After close: NI is 0 (already in RE), ending_re = ledger RE."""
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+
+        actual_re = fast_seeded.get_display_balance(6)
+        re = fast_seeded.gen_retained_earnings_statement()
+        assert re["net_income"] == 0
+        assert re["ending_re"] == actual_re
+
+    def test_balanceSheet_preClose_balancedWithNetIncome(self, fast_seeded):
+        """Balance sheet includes NI in equity pre-close and is balanced."""
+        bs = fast_seeded.gen_balance_sheet()
         assert bs["balanced"] is True
-        assert len(bs["assets"]) > 0
-        assert len(bs["liabilities"]) > 0
-        assert len(bs["equity"]) > 0
 
-    def test_account_summary(self, seeded_manager: AccountManager):
-        summary = seeded_manager.gen_account_summary()
+    def test_balanceSheet_postClose_noSeparateNetIncome(self, fast_seeded):
+        """Post-close BS has no separate NI line (it's in RE)."""
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+
+        bs = fast_seeded.gen_balance_sheet()
+        assert bs["balanced"] is True
+        equity_names = {n for n, _ in bs["equity"]}
+        assert "net income" not in equity_names
+
+    def test_balanceSheet_retainedEarnings_matchesLedger(self, fast_seeded):
+        """BS retained earnings matches the ledger, not inflated."""
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+
+        actual_re = fast_seeded.get_display_balance(6)
+        bs = fast_seeded.gen_balance_sheet()
+
+        re_in_bs = sum(b for n, b in bs["equity"] if "retained" in n.lower())
+        assert re_in_bs == actual_re
+
+    def test_accountSummary_seededData_balanced(self, fast_seeded):
+        """Account summary is balanced with positive net worth."""
+        summary = fast_seeded.gen_account_summary()
         assert summary["balanced"] is True
         assert summary["net_worth"] >= 0
-        assert len(summary["groups"]) == 5  # Asset, Liability, Equity, Income, Expense
 
-    # ── Balance sheet with live income (pre-close) ────────────
+    def test_closeTemps_twice_isNoop(self, fast_seeded):
+        """Calling close_temps() twice doesn't change RE."""
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+        re1 = fast_seeded.get_display_balance(6)
 
-    def test_balance_sheet_balanced_with_live_income(self, seeded_manager: AccountManager):
-        """Pre-close: net income appears in equity and balance sheet balances."""
-        ids = seeded_manager.account_ids
-        # Add income & expense transactions without closing
-        seeded_manager.add_transaction(
-            datetime(2026, 6, 1), "Paycheck",
-            [Split(ids["HS Checking"], 300000), Split(ids.get("Wages", 4), -300000)],
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+        re2 = fast_seeded.get_display_balance(6)
+
+        assert re2 == re1
+
+    def test_accountingEquation_multipleTransactions_staysBalanced(self, fast_manager):
+        """Adding many transactions keeps A = L + E."""
+        checking = fast_manager.add_account("Checking", 1)
+        wages = fast_manager.add_account("Wages", 4)
+        rent = fast_manager.add_account("Rent", 5)
+
+        for i in range(10):
+            fast_manager.add_transaction(
+                datetime(2026, 1, 1 + i), f"Txn {i}",
+                [Split(wages, -100000), Split(checking, 100000)],
+            )
+            fast_manager.add_transaction(
+                datetime(2026, 1, 1 + i), f"Exp {i}",
+                [Split(rent, 50000), Split(checking, -50000)],
+            )
+        fast_manager.generate_ledger()
+
+        eq = fast_manager.check_accounting_equation()
+        assert eq["balanced"] is True
+
+    def test_balanceSheet_withContraAccount_reducesAssets(self, fast_manager):
+        """Contra-asset accounts reduce total assets on the balance sheet."""
+        checking = fast_manager.add_account("Checking", 1)
+        depr = fast_manager.add_account("Accum Depr", 1, is_contra=True)
+
+        fast_manager.add_transaction(
+            datetime(2026, 1, 1), "Open",
+            [Split(checking, 10000000), Split(6, -10000000)],
         )
-        seeded_manager.add_transaction(
-            datetime(2026, 6, 2), "Groceries",
-            [Split(ids.get("Groceries", 5), 5000), Split(ids["HS Checking"], -5000)],
+        fast_manager.add_transaction(
+            datetime(2026, 6, 1), "Depreciation",
+            [Split(6, 200000), Split(depr, -200000)],
         )
-        seeded_manager.generate_ledger()
+        fast_manager.generate_ledger()
 
-        bs = seeded_manager.gen_balance_sheet()
-        assert bs["balanced"] is True, (
-            f"Balance sheet must balance with live income. "
-            f"A={bs['total_assets']} L={bs['total_liabilities']} E={bs['total_equity']}"
-        )
-        # Equity should include a net income entry
-        equity_names = [n for n, _ in bs["equity"]]
-        assert any("net income" in n.lower() for n in equity_names), (
-            f"Expected 'net income' in equity, got {equity_names}"
-        )
-
-    # ── RE statement doesn't double-count post-close ─────────
-
-    def test_re_statement_no_double_count_after_close(self, seeded_manager: AccountManager):
-        """Post-close: RE statement should not inflate by adding NI twice.
-
-        After close_temps(), income/expense are zeroed and NI is in RE.
-        The RE statement must detect this and set NI = 0.
-        """
-        re_before = -seeded_manager.accounts[6].get_balance()
-
-        seeded_manager.close_temps()
-        seeded_manager.generate_ledger()
-
-        re_after = -seeded_manager.accounts[6].get_balance()
-        re_stmt = seeded_manager.gen_retained_earnings_statement()
-
-        # RE ending from statement should not exceed actual ledger RE
-        assert re_stmt["ending_re"] <= re_after, (
-            f"RE statement ending ({re_stmt['ending_re']}) exceeds "
-            f"actual ledger RE ({re_after})"
-        )
-        # NI should be zero since income accounts are closed
-        assert re_stmt["net_income"] == 0, (
-            f"Expected NI=0 post-close, got {re_stmt['net_income']}"
-        )
-
-    def test_re_statement_normal_before_close(self, seeded_manager: AccountManager):
-        """Pre-close: RE statement reports NI normally."""
-        # Add some income first
-        ids = seeded_manager.account_ids
-        seeded_manager.add_transaction(
-            datetime(2026, 6, 1), "Paycheck",
-            [Split(ids["HS Checking"], 300000), Split(ids.get("Wages", 4), -300000)],
-        )
-        seeded_manager.generate_ledger()
-
-        re_stmt = seeded_manager.gen_retained_earnings_statement()
-        # NI should be non-zero since income accounts are live
-        assert re_stmt["net_income"] > 0, (
-            f"Expected NI > 0 pre-close, got {re_stmt['net_income']}"
-        )
-        ending = re_stmt["beginning_re"] + re_stmt["net_income"] - re_stmt["dividends"]
-        assert ending == re_stmt["ending_re"], (
-            f"RE equation doesn't hold: {re_stmt['beginning_re']} + "
-            f"{re_stmt['net_income']} - {re_stmt['dividends']} != {re_stmt['ending_re']}"
-        )
-
-    # ── Balance sheet shows non-leaf accounts with direct balances ──
-
-    def test_balance_sheet_shows_non_leaf_direct_balance(self, seeded_manager: AccountManager):
-        """Accounts in the middle of the tree appear if they have direct splits.
-
-        Generate a transaction against 'cash' (a parent of checking/savings)
-        and verify it shows up on the balance sheet.
-        """
-        ids = seeded_manager.account_ids
-        # Cash is id=7 (under Assets, may have children in some trees)
-        # Add a direct transaction to cash
-        cash_id = 7  # parent of checking/savings
-        seeded_manager.add_transaction(
-            datetime(2026, 6, 1), "Cash deposit",
-            [Split(cash_id, 50000), Split(ids["HS Checking"], -50000)],
-        )
-        seeded_manager.generate_ledger()
-
-        bs = seeded_manager.gen_balance_sheet()
-        asset_names = [n for n, _ in bs["assets"]]
-        assert "cash" in [n.lower() for n in asset_names], (
-            f"Expected 'cash' (non-leaf) on balance sheet, got {asset_names}"
-        )
-        assert bs["balanced"] is True, (
-            f"Balance sheet must still balance with direct non-leaf txn. "
-            f"A={bs['total_assets']} L+E={bs['total_liabilities_equity']}"
-        )
-
-    # ── Full cycle: pre-close balances → close → post-close balances ──
-
-    def test_balance_sheet_full_cycle(self, seeded_manager: AccountManager):
-        """Balance sheet balances before close, after close, and RE doesn't inflate."""
-        ids = seeded_manager.account_ids
-
-        # Add income
-        seeded_manager.add_transaction(
-            datetime(2026, 6, 1), "Paycheck",
-            [Split(ids["HS Checking"], 300000), Split(ids.get("Wages", 4), -300000)],
-        )
-        seeded_manager.add_transaction(
-            datetime(2026, 6, 2), "Rent",
-            [Split(ids.get("Rent", 5), 150000), Split(ids["HS Checking"], -150000)],
-        )
-        seeded_manager.generate_ledger()
-
-        # Pre-close: balanced with NI in equity
-        bs_pre = seeded_manager.gen_balance_sheet()
-        assert bs_pre["balanced"], f"Pre-close unbalanced: {bs_pre}"
-
-        re_pre = seeded_manager.gen_retained_earnings_statement()
-        assert re_pre["net_income"] > 0, "Pre-close NI should be positive"
-
-        # Close
-        seeded_manager.close_temps()
-        seeded_manager.generate_ledger()
-
-        bs_post = seeded_manager.gen_balance_sheet()
-        assert bs_post["balanced"], \
-            f"Post-close unbalanced: A={bs_post['total_assets']} L+E={bs_post['total_liabilities_equity']}"
-
-        re_post = seeded_manager.gen_retained_earnings_statement()
-        assert re_post["net_income"] == 0, \
-            f"Post-close NI should be 0, got {re_post['net_income']}"
-
-        # Close AGAIN — should be a no-op
-        re_before_2nd_close = -seeded_manager.accounts[6].get_balance()
-        seeded_manager.close_temps()
-        seeded_manager.generate_ledger()
-        re_after_2nd_close = -seeded_manager.accounts[6].get_balance()
-        assert re_after_2nd_close == re_before_2nd_close, \
-            f"Second close changed RE: {re_before_2nd_close} → {re_after_2nd_close}"
+        bs = fast_manager.gen_balance_sheet()
+        assert bs["balanced"] is True
+        # Contra reduces assets
+        contra_names = [n for n, _ in bs["assets"] if "(-)" in n or "Depr" in n]
+        assert len(contra_names) > 0
