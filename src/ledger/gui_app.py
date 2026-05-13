@@ -208,8 +208,7 @@ class LedgerGUI(tk.Tk):
 
         self.transaction_table = ttk.Treeview(
             table_frame,
-            columns=("date", "desc", "debit_acct", "credit_acct", "amount"),
-            displaycolumns=("date", "desc", "amount"),
+            columns=("date", "desc", "amount"),
             yscrollcommand=txn_scroll_y.set,
             xscrollcommand=txn_scroll_x.set,
             selectmode="browse",
@@ -346,9 +345,7 @@ class LedgerGUI(tk.Tk):
                 values=(
                     txn.date.strftime(DATE_STR),
                     txn.description,
-                    "",  # debit_acct (hidden)
-                    "",  # credit_acct (hidden)
-                    total,  # amount
+                    total,
                 ),
                 iid=str(txn_id),
             )
