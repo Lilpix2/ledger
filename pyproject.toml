@@ -7,7 +7,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ledger = "ledger.tui_app:main"
+ledger = "ledger.gui_app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
