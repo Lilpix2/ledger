@@ -21,7 +21,7 @@ from textual.widgets import (
     Tree,
 )
 
-from .constants import DATE_STR
+from .constants import DATE_STR, ACCOUNT_SUBTYPES
 from .controllers.accounts import AccountManager
 from .models.data_class import Split
 
@@ -225,7 +225,6 @@ class AddAccountScreen(ModalScreen[tuple[str, int, str | None] | None]):
         if not value:
             w.remove_class("valid", "invalid")
             return
-        from ..constants import ACCOUNT_SUBTYPES
         _set_valid(w, value in ACCOUNT_SUBTYPES)
 
     # ── Actions ─────────────────────────────────────
