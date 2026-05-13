@@ -126,6 +126,17 @@ class DatabaseController:
             conn.execute("DELETE FROM split WHERE journal_id = ?", (txn_id,))
             conn.execute("DELETE FROM journal WHERE journal_id = ?", (txn_id,))
 
+    def _wipe_splits_for_account(self, acct_id: int) -> None:
+        """Delete any orphaned split rows referencing an account.
+
+        This cleanup is needed when an account is deleted but its
+        split rows were never cleaned up (e.g. db_id_map gap).
+        """
+        with self._connect() as conn:
+            conn.execute("""
+                DELETE FROM split WHERE account_id = ?
+            """, (acct_id,))
+
     @staticmethod
     def _save_splits(
         conn: sqlite3.Connection, jid: int, splits: list[Split],
