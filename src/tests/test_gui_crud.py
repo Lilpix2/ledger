@@ -38,6 +38,23 @@ def _has_tkinter_display() -> bool:
 HAS_DISPLAY = _has_tkinter_display()
 no_display = pytest.mark.skipif(not HAS_DISPLAY, reason="No display available")
 
+@pytest.fixture(autouse=True)
+def _close_tkinter_windows():
+    """Destroy any leftover tkinter windows after each test."""
+    yield
+    if HAS_DISPLAY:
+        try:
+            import tkinter as tk
+            root = tk._default_root
+            if root is not None:
+                for child in list(root.children.values()):
+                    try:
+                        child.destroy()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
 
 # ── Fixtures ───────────────────────────────────────────────────────
 
