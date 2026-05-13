@@ -145,7 +145,10 @@ class AccountManager:
         if account_subtype is not None:
             acct.account_subtype = account_subtype
         db_parent = parent if parent is not None and parent != 0 else None
-        self.db.update_account(acct_id, name, db_parent, acct_type, account_subtype)
+        # Don't overwrite DB fields that weren't explicitly changed
+        final_type = acct_type if acct_type is not None else acct.acct_type
+        final_subtype = account_subtype if account_subtype is not None else acct.account_subtype
+        self.db.update_account(acct_id, name, db_parent, final_type, final_subtype)
 
     def delete_account(self, acct_id: int) -> None:
         """Remove an account. Fails if it has children."""
