@@ -1424,17 +1424,20 @@ class TestCRUDThroughDialogs:
         child = app.manager.add_account("ChildOfDelete", parent)
         txn_target = app.manager.add_account("TxnTarget", 1)
         child_target = app.manager.add_account("ChildTarget", 1)
-        equity = next(
-            (aid for aid, a in app.manager.accounts.items() if a.name == "retained earnings"),
-            6,
+        wages_acct = next(
+            (aid for aid, a in app.manager.accounts.items() if a.name == "Wages"),
+            None,
         )
-        # Fund the parent via a txn so it has referencing splits
+        if wages_acct is None:
+            wages_acct = app.manager.add_account("Wages", 4)
+        # Fund the parent via a txn so it has referencing splits.
+        # Credit goes to Wages (income account) so both accounts exist in DB.
         app.manager.add_transaction(
             datetime(2026, 8, 1), "Fund delete-me",
-            [Split(parent, 99999), Split(equity, -99999)],
+            [Split(parent, 99999), Split(wages_acct, -99999)],
         )
         app.manager.generate_ledger()
-        return app, parent, child, child_target, txn_target
+        return app, parent, child, child_target, txn_target, wages_acct
 
     def test_delete_account_dialog_reassigns_children_and_txns_together(
         self, seeded_db: str,
@@ -1444,7 +1447,7 @@ class TestCRUDThroughDialogs:
         from tkinter import ttk
         from unittest.mock import patch
 
-        app, parent, child, child_target, txn_target = self._prepare_delete_app(seeded_db)
+        app, parent, child, child_target, txn_target, _ = self._prepare_delete_app(seeded_db)
         try:
             # ── Intercept confirmation ─────────────────────────
             import tkinter.messagebox as mb
@@ -1574,7 +1577,7 @@ class TestCRUDThroughDialogs:
         from tkinter import ttk
         from unittest.mock import patch
 
-        app, parent, child, _, _ = self._prepare_delete_app(seeded_db)
+        app, parent, child, _, _, _ = self._prepare_delete_app(seeded_db)
         try:
             import tkinter.messagebox as mb
             orig_ask = mb.askyesno
