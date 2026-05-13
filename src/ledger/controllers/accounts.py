@@ -899,6 +899,21 @@ class AccountManager:
                 bal = -raw
             e_items.append((acct.name, bal))
 
+        # Include net income in equity when income/expense haven't
+        # been closed to RE yet, so A = L + E still holds for live data.
+        # Detect closed state by checking if temp accounts are zeroed.
+        ni_report = self.gen_income_report()
+        ni = ni_report["net_income"]
+        income_ids = self.get_descendant_ids(4)
+        expense_ids = self.get_descendant_ids(5)
+        all_zero = all(
+            self.accounts[aid].get_balance() == 0
+            for aid in list(income_ids) + list(expense_ids)
+            if aid in self.accounts
+        )
+        if ni != 0 and not all_zero:
+            e_items.append(("net income", ni))
+
         total_a = sum(b for _, b in a_items)
         total_l = sum(b for _, b in l_items)
         total_e = sum(b for _, b in e_items)
