@@ -86,6 +86,11 @@ class LedgerGUI(tk.Tk):
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="Refresh", command=self._refresh_all, accelerator="F5")
         file_menu.add_separator()
+        file_menu.add_command(
+            label="Import QIF…", command=self._dialog_import_qif,
+            accelerator="Ctrl+I",
+        )
+        file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self._on_close, accelerator="Ctrl+Q")
         menubar.add_cascade(label="File", menu=file_menu)
 
@@ -143,6 +148,7 @@ class LedgerGUI(tk.Tk):
         self.bind_all("<Control-n>", lambda e: self._dialog_add_account())
         self.bind_all("<Control-t>", lambda e: self._dialog_add_transaction())
         self.bind_all("<Control-b>", lambda e: self._dialog_buy_sell())
+        self.bind_all("<Control-i>", lambda e: self._dialog_import_qif())
         self.bind_all("<Control-q>", lambda e: self._on_close())
         self.bind_all("<F5>", lambda e: self._refresh_all())
 
@@ -162,6 +168,9 @@ class LedgerGUI(tk.Tk):
             side=tk.LEFT, padx=2,
         )
         ttk.Button(toolbar, text="Buy/Sell", command=self._dialog_buy_sell).pack(
+            side=tk.LEFT, padx=2,
+        )
+        ttk.Button(toolbar, text="Import QIF", command=self._dialog_import_qif).pack(
             side=tk.LEFT, padx=2,
         )
         ttk.Button(toolbar, text="Refresh", command=self._refresh_all).pack(
@@ -721,6 +730,63 @@ class LedgerGUI(tk.Tk):
 
     def _dialog_buy_sell(self) -> None:
         BuySellDialog(self, self.manager, self._refresh_all)
+
+    def _dialog_import_qif(self) -> None:
+        """Open a file dialog to select and import a QIF file."""
+        from tkinter import filedialog, messagebox
+        from ledger.scripts.import_qif import import_qif
+
+        path = filedialog.askopenfilename(
+            title="Select a QIF file to import",
+            filetypes=[
+                ("QIF files", "*.qif"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        # Dry run first
+        try:
+            dry_summary = import_qif(path, self.manager.db.db_path, dry_run=True)
+        except Exception as e:
+            messagebox.showerror("Import Error",
+                f"Failed to read QIF file:\n{e}")
+            return
+
+        if dry_summary["entries_created"] == 0 and dry_summary["records_found"] == 0:
+            messagebox.showinfo("Import",
+                "No transaction records found in this file.")
+            return
+
+        # Ask to confirm
+        msg = (
+            f"File: {os.path.basename(path)}\n"
+            f"Type: {dry_summary.get('type', 'Unknown')}\n"
+            f"Records found: {dry_summary['records_found']}\n\n"
+            f"Import this data into the ledger?"
+        )
+        if not messagebox.askyesno("Import QIF", msg):
+            return
+
+        # Do the import
+        try:
+            from datetime import datetime
+            start = datetime.now()
+            summary = import_qif(path, self.manager.db.db_path)
+            elapsed = (datetime.now() - start).total_seconds()
+            result = (
+                f"Import complete!\n\n"
+                f"Entries created: {summary['entries_created']}\n"
+                f"Accounts created: {summary.get('accounts_created', 0)}\n"
+                f"Prices imported: {summary.get('prices_imported', 0)}\n"
+                f"Time: {elapsed:.1f}s"
+            )
+            messagebox.showinfo("Import Result", result)
+            self._refresh_all()
+        except Exception as e:
+            messagebox.showerror("Import Error",
+                f"Failed to import QIF file:\n{e}")
 
     # ══════════════════════════════════════════════════════════════
     #  REPORT LAUNCHERS — delegates to gui/reports.py
