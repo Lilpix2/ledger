@@ -30,8 +30,10 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
                dry_run: bool = False) -> dict:
     """Import 529 QIF data into the ledger at *db_path*.
 
-    Uses a net-summary approach: computes total shares and cost per fund
-    across all transactions, then creates a single opening entry for each.
+    Uses a net-summary approach with pro-rata cost tracking:
+    buys add to shares+cost, sells subtract from shares and cost
+    proportionally (so internal fund conversions don't inflate
+    the total cost basis).
 
     Args:
         qif_path: Path to the 529 QIF export file.
@@ -47,33 +49,26 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
     records = parse_qif(qif_text)
     prices = _parse_prices(qif_text)
 
-    # ── Aggregate by ticker ───────────────────────────────────
-    # Net shares and total cost from all buy/sell/dividend events
+    # ── Aggregate by ticker with pro-rata cost tracking ──────
     funds: dict[str, dict] = defaultdict(lambda: {
         "net_shares": 0.0,
         "total_cost_cents": 0,
-        "first_date": None,
         "last_date": None,
         "buys": 0,
         "sells": 0,
         "divs": 0,
     })
 
-    total_div_cents = 0
-
     for r in records:
         ticker = r.ticker or "unknown"
         q = abs(r.quantity) if r.quantity else 0
-        amt = int(round(float(r.amount) * 100)) if r.amount else 0
-        amt = abs(amt)
+        amt = abs(int(round(float(r.amount) * 100))) if r.amount else 0
         try:
             dt = datetime.strptime(r.date, "%m/%d/%Y")
         except ValueError:
             continue
 
         f = funds[ticker]
-        if f["first_date"] is None or dt < f["first_date"]:
-            f["first_date"] = dt
         if f["last_date"] is None or dt > f["last_date"]:
             f["last_date"] = dt
 
@@ -81,17 +76,33 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
             f["net_shares"] += q
             f["total_cost_cents"] += amt
             f["buys"] += 1
+
         elif r.check_num in ("SellX", "Sell"):
+            # Pro-rata cost reduction: remove same % of cost as shares
+            old_shares = f["net_shares"]  # before subtracting
+            old_cost = f["total_cost_cents"]
+            if old_shares > 0:
+                fraction = q / (old_shares + q)
+                removed = int(round(old_cost * fraction))
+                f["total_cost_cents"] -= min(removed, old_cost)
             f["net_shares"] -= q
             f["sells"] += 1
+
         elif r.check_num == "ShrsIn":
             f["net_shares"] += q
             f["total_cost_cents"] += amt
             f["divs"] += 1
-            total_div_cents += amt
+
         elif r.check_num == "ShrsOut":
+            # Treat like a sell — reduce shares + cost pro-rata
+            old_shares = f["net_shares"]
+            old_cost = f["total_cost_cents"]
+            if old_shares > 0:
+                fraction = q / (old_shares + q)
+                removed = int(round(old_cost * fraction))
+                f["total_cost_cents"] -= min(removed, old_cost)
             f["net_shares"] -= q
-            f["sells"] += 1  # treat as sell for summary
+            f["sells"] += 1
 
     summary = {
         "funds": len(funds),
@@ -117,22 +128,20 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
         if any(s.account_id in mesp_acct_ids for s in txn.splits):
             mgr.delete_transaction(txn_id)
 
-    # Buy-in account: where the money came from
     buyin = _ensure_account(mgr, "529 Contributions", 4, "INCOME")
-    div_income = _ensure_account(mgr, "529 Dividends", 4, "INCOME")
     parent = _ensure_account(mgr, "529 Plans", 1, "ASSET", "mesp")
 
+    total_cost_imported = 0
     for ticker, f in sorted(funds.items()):
-        if f["net_shares"] <= 0:
-            continue  # skip fully-sold funds
+        if f["net_shares"] <= 0 or f["total_cost_cents"] <= 0:
+            continue
 
         sub = _ensure_account(mgr, ticker, parent, "ASSET", "mesp")
         summary["accounts_created"] += 1
 
-        # Create holding
         mgr.set_holding(sub, ticker, f["net_shares"], f["total_cost_cents"])
+        total_cost_imported += f["total_cost_cents"]
 
-        # Journal entry: DR sub-fund, CR contribution income
         mgr.add_transaction(
             f["last_date"] or datetime.now(),
             f"529 {ticker} — {f['buys']} buys + {f['divs']} dividends",
@@ -140,15 +149,7 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
         )
         summary["entries_created"] += 1
 
-    # One entry for all dividends
-    if total_div_cents > 0:
-        # Dividends are already included in the fund cost above.
-        # This additional entry splits the dividend portion into a
-        # separate income category for better reporting.
-        summary["entries_created"] += 1
-
     # ── Import prices (bulk, only latest per ticker) ────────
-    # Keep only the most recent price per ticker
     latest_prices: dict[str, tuple[str, int]] = {}
     for ticker, price_cents, date_str in prices:
         normalized_date = _normalize_date(date_str)
@@ -163,9 +164,6 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
 
     mgr.generate_ledger()
     return summary
-
-
-# ── Helpers ────────────────────────────────────────────────────────
 
 
 def _ensure_account(mgr: AccountManager, name: str, parent: int,
@@ -196,6 +194,7 @@ def main(argv: list[str] | None = None) -> None:
         dry_run = True
 
     summary = import_529(qif_path, db_path, dry_run=dry_run)
+
     print(f"529 Import Summary{' (DRY RUN)' if dry_run else ':'}", file=sys.stderr)
     for k, v in summary.items():
         print(f"  {k}: {v}", file=sys.stderr)
