@@ -723,6 +723,185 @@ class BuySellScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
+# ── Modal: Portfolio View ──────────────────────────────────────────
+
+
+class PortfolioScreen(ModalScreen[None]):
+    """Full-screen view of all investment holdings with market value and P&L."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("── Portfolio ──", id="title")
+        yield Static("", id="port-summary")
+        yield DataTable(id="port-table", zebra_stripes=True, cursor_type="row")
+        yield Static("", id="port-footer")
+        with Horizontal(id="buttons"):
+            yield Button("Refresh", id="refresh")
+            yield Button("Close", variant="primary", id="close")
+
+    def on_mount(self):
+        self._refresh()
+
+    def _format_cents(self, cents: int | None) -> str:
+        if cents is None:
+            return "—"
+        prefix = ""
+        if cents >= 0:
+            return f"${cents/100:,.2f}"
+        return f"-${abs(cents)/100:,.2f}"
+
+    def _format_pnl_pct(self, pnl_cents: int | None, cost: int) -> str:
+        if pnl_cents is None or cost == 0:
+            return "—"
+        pct = (pnl_cents / cost) * 100
+        prefix = "+" if pct >= 0 else ""
+        return f"{prefix}{pct:.2f}%"
+
+    def _format_shares(self, shares: float) -> str:
+        if abs(shares - round(shares)) < 0.0001:
+            return f"{int(shares)}"
+        return f"{shares:.4f}"
+
+    def _refresh(self):
+        """Rebuild the portfolio table from current data."""
+        mgr = self.app.manager
+        table = self.query_one("#port-table", DataTable)
+        table.clear()
+        table.add_columns(
+            "Account", "Ticker", "Shares", "Cost Basis",
+            "Price", "Market Value", "P&L $", "P&L %",
+        )
+
+        all_holdings = mgr.get_all_holdings()
+
+        if not all_holdings:
+            table.add_row("No investment positions", *( "" for _ in range(7)))
+            self.query_one("#port-summary", Static).update("[dim]No holdings found[/]")
+            return
+
+        # Group by account, preserving order
+        from collections import OrderedDict
+        by_account: OrderedDict[int, list] = OrderedDict()
+        for h in all_holdings:
+            by_account.setdefault(h.account_id, []).append(h)
+
+        grand_cost = 0
+        grand_market: int | None = 0
+        grand_pnl: int | None = 0
+        grand_has_price = True
+        rows_added = 0
+
+        for acct_id, holdings_list in by_account.items():
+            acct = mgr.accounts[acct_id]
+
+            # Account header row
+            table.add_row(
+                f"[bold]{acct.name}[/]",
+                "", "", "", "", "", "", "",
+            )
+            rows_added += 1
+
+            acct_cost = 0
+            acct_market: int | None = 0
+            acct_pnl: int | None = 0
+            acct_has_price = True
+
+            for h in holdings_list:
+                price = mgr.get_latest_price(h.ticker)
+                cost = h.cost_basis_cents
+                acct_cost += cost
+                grand_cost += cost
+
+                if price is not None:
+                    market = int(h.shares * price)
+                    pnl = market - cost
+                    acct_market = (acct_market or 0) + market
+                    acct_pnl = (acct_pnl or 0) + pnl
+                else:
+                    acct_has_price = False
+                    market = None
+                    pnl = None
+
+                price_str = self._format_cents(price)
+                market_str = self._format_cents(market)
+                pnl_str = self._format_cents(pnl)
+                pnl_pct = self._format_pnl_pct(pnl, cost) if pnl is not None else "—"
+
+                table.add_row(
+                    "",
+                    f"[bold]{h.ticker}[/]",
+                    self._format_shares(h.shares),
+                    self._format_cents(cost),
+                    price_str,
+                    market_str,
+                    pnl_str,
+                    pnl_pct,
+                )
+                rows_added += 1
+
+            # Account subtotal
+            acct_pnl_str = self._format_cents(acct_pnl)
+            acct_pnl_pct = self._format_pnl_pct(acct_pnl, acct_cost) if acct_pnl is not None else "—"
+            table.add_row(
+                f"[dim]Subtotal: {acct.name}[/]",
+                "", "", self._format_cents(acct_cost),
+                "", self._format_cents(acct_market),
+                acct_pnl_str, acct_pnl_pct,
+            )
+            rows_added += 1
+
+            # Accumulate grand totals
+            if acct_has_price and acct_market is not None and acct_pnl is not None:
+                grand_market = (grand_market or 0) + acct_market
+                grand_pnl = (grand_pnl or 0) + acct_pnl
+            else:
+                grand_has_price = False
+
+            # Blank separator
+            table.add_row("", "", "", "", "", "", "", "")
+            rows_added += 1
+
+        # Grand total summary
+        if grand_has_price:
+            grand_pnl_str = self._format_cents(grand_pnl)
+            grand_pnl_pct = self._format_pnl_pct(grand_pnl, grand_cost)
+        else:
+            grand_pnl_str = "—"
+            grand_pnl_pct = "—"
+
+        table.add_row(
+            f"[bold underline]TOTAL[/]",
+            "", "",
+            self._format_cents(grand_cost),
+            "",
+            self._format_cents(grand_market if grand_has_price else None),
+            grand_pnl_str,
+            grand_pnl_pct,
+        )
+
+        # Summary header
+        has_missing = "⚠ Some positions missing prices" if not grand_has_price else ""
+        summary = (
+            f"[bold]Total Cost:[/] {self._format_cents(grand_cost)}  "
+            f"[bold]Market Value:[/] {self._format_cents(grand_market if grand_has_price else None)}  "
+            f"[bold]Unrealized P&L:[/] {grand_pnl_str}  "
+            f"[dim]{has_missing}[/]"
+        )
+        self.query_one("#port-summary", Static).update(summary)
+
+        self._rows_added = rows_added
+
+    # ── Interactions ───────────────────────────────────
+
+    @on(Button.Pressed, "#refresh")
+    def _do_refresh(self):
+        self._refresh()
+        self.notify("Portfolio refreshed", severity="information")
+
+    @on(Button.Pressed, "#close")
+    def _do_close(self):
+        self.dismiss(None)
+
+
 # ── Main App ───────────────────────────────────────────────────────
 
 
@@ -975,11 +1154,54 @@ class LedgerApp(App[None]):
     BuySellScreen Button {
         margin: 0 1;
     }
+
+    /* ── Portfolio Screen ──────────────────────────── */
+    PortfolioScreen {
+        align: center middle;
+    }
+
+    PortfolioScreen > #title {
+        text-style: bold;
+        padding: 1 0;
+        width: 100%;
+        content-align: center middle;
+    }
+
+    PortfolioScreen #port-summary {
+        height: 1;
+        padding: 0 1;
+        background: $boost;
+        color: $text;
+        text-style: bold;
+    }
+
+    PortfolioScreen #port-table {
+        height: 1fr;
+        border: solid $primary;
+        margin: 1 0;
+    }
+
+    PortfolioScreen #port-footer {
+        height: 1;
+        padding: 0 1;
+        text-style: italic;
+    }
+
+    PortfolioScreen > #buttons {
+        height: 3;
+        align: center middle;
+    }
+
+    PortfolioScreen Button {
+        margin: 0 1;
+    }
     """
 
     BINDINGS = [
         Binding("a", "add_account", "Add Account"),
         Binding("t", "add_transaction", "Add Transaction"),
+        Binding("v", "buy_sell", "Buy/Sell"),
+        Binding("p", "portfolio", "Portfolio"),
         Binding("i", "income_statement", "Income Stmt"),
         Binding("r", "retained_earnings", "RE Stmt"),
         Binding("b", "balance_sheet", "Balance Sheet"),
@@ -1171,6 +1393,10 @@ class LedgerApp(App[None]):
         """Open the buy/sell investment modal."""
         self.push_screen(BuySellScreen(), self._handle_buy_sell)
 
+    def action_portfolio(self) -> None:
+        """Open the portfolio view."""
+        self.push_screen(PortfolioScreen(), self._handle_portfolio)
+
     def _handle_buy_sell(self, result: dict | None) -> None:
         if result is None:
             return
@@ -1216,6 +1442,11 @@ class LedgerApp(App[None]):
 
         except ValueError as e:
             self.notify(str(e), severity="error")
+
+    def _handle_portfolio(self, result: None) -> None:
+        """Portfolio view is read-only — just refresh main on return."""
+        self._populate_tree()
+        self._refresh_status()
 
     def _handle_add_transaction(self, result: tuple[datetime, str, list] | None) -> None:
         if result is None:
