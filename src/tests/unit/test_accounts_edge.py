@@ -43,12 +43,13 @@ class TestDeleteAccountEdge:
 
     # ── Error states / Exceptions ──────────────────────────────
 
-    def test_parent_with_children_raises(self, fast_manager):
-        """Deleting an account with sub-accounts raises ValueError."""
+    def test_parent_with_children_cascades_now(self, fast_manager):
+        """Deleting an account with sub-accounts cascades (no longer raises)."""
         parent = fast_manager.add_account("Parent", 1)
-        fast_manager.add_account("Child", parent)
-        with pytest.raises(ValueError, match="sub-account"):
-            fast_manager.delete_account(parent)
+        child = fast_manager.add_account("Child", parent)
+        fast_manager.delete_account(parent)
+        assert parent not in fast_manager.accounts
+        assert child not in fast_manager.accounts
 
     def test_root_account_raises(self, fast_manager):
         """Deleting id=0 raises ValueError."""

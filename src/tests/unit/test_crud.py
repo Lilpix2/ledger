@@ -282,14 +282,13 @@ class TestAccountManagerAddUpdateDelete:
         # Assert
         assert aid not in fast_manager.accounts
 
-    def test_deleteAccount_withChildren_raises(self, fast_manager):
-        """Deleting an account that has children raises."""
-        # Arrange
+    def test_deleteAccount_withChildren_cascades_now(self, fast_manager):
+        """Deleting an account that has children cascades."""
         parent = fast_manager.add_account("Parent", 1)
-        fast_manager.add_account("Child", parent)
-        # Act & Assert
-        with pytest.raises(ValueError, match="sub-account"):
-            fast_manager.delete_account(parent)
+        child = fast_manager.add_account("Child", parent)
+        fast_manager.delete_account(parent)
+        assert parent not in fast_manager.accounts
+        assert child not in fast_manager.accounts
 
     def test_deleteAccount_withTransactions_succeeds(self, fast_manager):
         """Deleting an account with referencing transactions removes them first."""

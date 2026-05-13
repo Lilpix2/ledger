@@ -66,6 +66,24 @@ class MockDB:
     def delete_account(self, acct_id: int) -> None:
         self._accounts.pop(acct_id, None)
 
+    def reassign_splits_in_db(self, source_id: int, target_id: int) -> None:
+        """Move all split rows referencing *source_id* to *target_id*."""
+        for i, (date, desc, splits) in enumerate(self._txns):
+            for s in splits:
+                if s.account_id == source_id:
+                    s.account_id = target_id
+
+    def reparent_children_in_db(self, old_parent_id: int, new_parent_id: int) -> None:
+        """Reparent all direct children of *old_parent_id* to *new_parent_id*."""
+        updated: list[tuple] = []
+        for aid, (name, parent, acct_type, is_contra, subtype) in self._accounts.items():
+            if parent == old_parent_id:
+                updated.append((aid, name, new_parent_id, acct_type, is_contra, subtype))
+            else:
+                updated.append((aid, name, parent, acct_type, is_contra, subtype))
+        for aid, name, parent, acct_type, is_contra, subtype in updated:
+            self._accounts[aid] = (name, parent, acct_type, is_contra, subtype)
+
     def save_transaction(
         self, date: str, description: str, splits: list[Split]
     ) -> int:

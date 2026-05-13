@@ -744,6 +744,216 @@ class BuySellDialog:
         dialog.wait_window()
 
 
+# ── Delete Account ────────────────────────────────────────────────
+
+
+class DeleteAccountDialog:
+    """Modal dialog for deleting an account with options.
+
+    When the account has children or referencing transactions, the user
+    can choose to reassign them to another account or cascade-delete.
+
+    Usage::
+
+        DeleteAccountDialog(parent, manager, account_id, self._refresh_all)
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        manager: AccountManager,
+        acct_id: int,
+        on_success: Callable[[], None],
+    ):
+        self.manager = manager
+        self.acct_id = acct_id
+        self.on_success = on_success
+        self._build(parent)
+
+    def _build(self, parent: tk.Widget) -> None:
+        from tkinter import messagebox
+
+        acct = self.manager.accounts.get(self.acct_id)
+        if not acct:
+            messagebox.showerror("Error", f"Account ID {self.acct_id} not found", parent=parent)
+            return
+        if self.acct_id == 0:
+            messagebox.showerror("Error", "Cannot delete root account", parent=parent)
+            return
+
+        children = [
+            (aid, a) for aid, a in self.manager.accounts.items()
+            if a.parent == self.acct_id and aid != 0
+        ]
+        referencing_txn_ids: list[int] = []
+        for txn_id, txn in self.manager.journal.transactions.items():
+            for s in txn.splits:
+                if s.account_id == self.acct_id:
+                    referencing_txn_ids.append(txn_id)
+                    break
+
+        # If no children and no transactions — simple confirmation
+        if not children and not referencing_txn_ids:
+            if messagebox.askyesno(
+                "Delete Account",
+                f"Delete account '{acct.name}'?\n\nThis cannot be undone.",
+                parent=parent,
+            ):
+                self.manager.delete_account(self.acct_id)
+                self.on_success()
+            return
+
+        # ── Full dialog with options ────────────────────────
+        dialog = tk.Toplevel(parent)
+        dialog.title(f"Delete Account: {acct.name}")
+        dialog.geometry("480x320")
+        dialog.resizable(False, False)
+        dialog.transient(parent)
+        try:
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+        self.dialog = dialog
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(1, weight=1)
+
+        # Account info header
+        ttk.Label(
+            frame, text=f"Account: {acct.name} ({acct.acct_type})",
+            font=("", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 8))
+
+        child_target: int | None = None
+        txn_target: int | None = None
+        child_var = tk.StringVar()
+        txn_var = tk.StringVar()
+
+        row = 1
+
+        # ── Children section ────────────────────────────────
+        if children:
+            child_frame = ttk.LabelFrame(frame, text="Sub-accounts", padding=6)
+            child_frame.grid(row=row, column=0, columnspan=3, sticky=tk.EW, pady=4)
+            child_frame.columnconfigure(1, weight=1)
+            row += 1
+
+            ttk.Label(
+                child_frame,
+                text=f"{len(children)} sub-account(s) found",
+            ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4))
+
+            child_cascade = tk.BooleanVar(value=False)
+
+            def _on_child_mode() -> None:
+                if child_cascade.get():
+                    child_combo.config(state=tk.DISABLED)
+                else:
+                    child_combo.config(state=tk.NORMAL)
+
+            ttk.Checkbutton(
+                child_frame, variable=child_cascade,
+                text="Delete children too",
+                command=_on_child_mode,
+            ).grid(row=1, column=0, sticky=tk.W)
+
+            ttk.Label(child_frame, text="Or move to:").grid(
+                row=2, column=0, sticky=tk.W, pady=(4, 0),
+            )
+            child_choices, child_map = build_account_choices(self.manager)
+            child_combo = ttk.Combobox(
+                child_frame, textvariable=child_var,
+                values=child_choices, width=45, state=tk.NORMAL,
+            )
+            child_combo.grid(row=2, column=1, sticky=tk.EW, padx=4, pady=(4, 0))
+
+        # ── Transactions section ───────────────────────────
+        if referencing_txn_ids:
+            txn_frame = ttk.LabelFrame(frame, text="Transactions", padding=6)
+            txn_frame.grid(row=row, column=0, columnspan=3, sticky=tk.EW, pady=4)
+            txn_frame.columnconfigure(1, weight=1)
+            row += 1
+
+            ttk.Label(
+                txn_frame,
+                text=f"{len(referencing_txn_ids)} transaction(s) reference this account",
+            ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4))
+
+            txn_cascade = tk.BooleanVar(value=False)
+
+            def _on_txn_mode() -> None:
+                if txn_cascade.get():
+                    txn_combo.config(state=tk.DISABLED)
+                else:
+                    txn_combo.config(state=tk.NORMAL)
+
+            ttk.Checkbutton(
+                txn_frame, variable=txn_cascade,
+                text="Delete transactions too",
+                command=_on_txn_mode,
+            ).grid(row=1, column=0, sticky=tk.W)
+
+            ttk.Label(txn_frame, text="Or move to:").grid(
+                row=2, column=0, sticky=tk.W, pady=(4, 0),
+            )
+            txn_choices, txn_map = build_account_choices(self.manager)
+            txn_combo = ttk.Combobox(
+                txn_frame, textvariable=txn_var,
+                values=txn_choices, width=45, state=tk.NORMAL,
+            )
+            txn_combo.grid(row=2, column=1, sticky=tk.EW, padx=4, pady=(4, 0))
+
+        # ── Buttons ────────────────────────────────────────
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=row, column=0, columnspan=3, pady=12)
+
+        def _do_delete() -> None:
+            from tkinter import messagebox
+
+            # Resolve child target
+            resolved_child_target: int | None = None
+            if children and not child_cascade.get():
+                resolved_child_target = child_map.get(child_var.get().strip())
+                if resolved_child_target is None:
+                    messagebox.showerror(
+                        "Error", "Select a target for children or check 'Delete children too'",
+                        parent=dialog,
+                    )
+                    return
+
+            # Resolve txn target
+            resolved_txn_target: int | None = None
+            if referencing_txn_ids and not txn_cascade.get():
+                resolved_txn_target = txn_map.get(txn_var.get().strip())
+                if resolved_txn_target is None:
+                    messagebox.showerror(
+                        "Error", "Select a target for transactions or check 'Delete transactions too'",
+                        parent=dialog,
+                    )
+                    return
+
+            try:
+                if resolved_child_target is not None:
+                    self.manager.reassign_children(self.acct_id, resolved_child_target)
+                if resolved_txn_target is not None:
+                    self.manager.reassign_transactions(self.acct_id, resolved_txn_target)
+                self.manager.delete_account(self.acct_id)
+                self.on_success()
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", str(e), parent=dialog)
+
+        ttk.Button(btn_frame, text="Delete Account", command=_do_delete).pack(
+            side=tk.LEFT, padx=4,
+        )
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(
+            side=tk.LEFT, padx=4,
+        )
+
+        dialog.wait_window()
+
+
 # ── CSV Import / Account Mapping ──────────────────────────────────
 
 

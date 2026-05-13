@@ -662,30 +662,8 @@ class LedgerGUI(tk.Tk):
         )
 
     def _dialog_delete_account(self, acct_id: int) -> None:
-        from tkinter import messagebox
-        acct = self.manager.accounts.get(acct_id)
-        if not acct:
-            return
-        children = sum(1 for a in self.manager.accounts.values() if a.parent == acct_id)
-        if children > 0:
-            messagebox.showerror(
-                "Cannot Delete",
-                f"'{acct.name}' has {children} sub-account(s).\n"
-                "Delete or re-parent them first.",
-            )
-            return
-        if messagebox.askyesno(
-            "Delete Account",
-            f"Delete account '{acct.name}'?\n\n"
-            "Transactions referencing this account will remain\n"
-            "but their split will show '?' for this account.\n\n"
-            "This cannot be undone.",
-        ):
-            try:
-                self.manager.delete_account(acct_id)
-                self._refresh_all()
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
+        from ledger.gui.dialogs import DeleteAccountDialog
+        DeleteAccountDialog(self, self.manager, acct_id, self._refresh_all)
 
     def _dialog_add_transaction(self) -> None:
         TransactionDialog(self, self.manager, self._refresh_all)

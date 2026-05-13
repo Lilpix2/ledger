@@ -744,14 +744,18 @@ class TestCRUDActions:
         finally:
             app.destroy()
 
-    def test_delete_account_with_children_raises(self, seeded_db: str):
-        """Delete account with children raises."""
+    def test_delete_account_with_children_cascades(self, seeded_db: str):
+        """Delete account with children now cascades by default."""
         app = _build_app(seeded_db)
         try:
             parent = app.manager.add_account("Parent", 1)
-            app.manager.add_account("Child", parent)
-            with pytest.raises(ValueError, match="sub-account"):
-                app.manager.delete_account(parent)
+            child = app.manager.add_account("Child", parent)
+            before = len(app.manager.accounts)
+            app.manager.delete_account(parent)
+            after = len(app.manager.accounts)
+            assert parent not in app.manager.accounts, "Parent not deleted"
+            assert child not in app.manager.accounts, "Child not cascade-deleted"
+            assert after < before, "Accounts not removed"
         finally:
             app.destroy()
 

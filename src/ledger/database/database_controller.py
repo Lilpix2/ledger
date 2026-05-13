@@ -126,6 +126,22 @@ class DatabaseController:
             conn.execute("DELETE FROM split WHERE journal_id = ?", (txn_id,))
             conn.execute("DELETE FROM journal WHERE journal_id = ?", (txn_id,))
 
+    def reassign_splits_in_db(self, source_id: int, target_id: int) -> None:
+        """Move all split rows referencing *source_id* to *target_id*."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE split SET account_id = ? WHERE account_id = ?",
+                (target_id, source_id),
+            )
+
+    def reparent_children_in_db(self, old_parent_id: int, new_parent_id: int) -> None:
+        """Reparent all direct children of *old_parent_id* to *new_parent_id*."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE accounts SET parent = ? WHERE parent = ?",
+                (new_parent_id, old_parent_id),
+            )
+
     def _wipe_splits_for_account(self, acct_id: int) -> None:
         """Delete any orphaned split rows referencing an account.
 

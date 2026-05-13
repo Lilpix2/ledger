@@ -265,6 +265,7 @@ class TestDeleteAccountWithOptions:
         m.generate_ledger()
 
         m.reassign_transactions(source, target)
+        m.generate_ledger()
         m.delete_account(source)
 
         assert source not in m.accounts
@@ -288,6 +289,7 @@ class TestDeleteAccountWithOptions:
 
         m.reassign_children(parent, child_target)
         m.reassign_transactions(parent, txn_target)
+        m.generate_ledger()
         m.delete_account(parent)
 
         assert parent not in m.accounts

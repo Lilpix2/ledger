@@ -156,21 +156,86 @@ class AccountManager:
         final_subtype = account_subtype if account_subtype is not None else acct.account_subtype
         self.db.update_account(acct_id, name, db_parent, final_type, final_subtype)
 
-    def delete_account(self, acct_id: int) -> None:
-        """Remove an account. Fails if it has children.
+    # ── Cycle detection ─────────────────────────────────────────
 
-        Also removes any transactions that reference this account,
-        and directly deletes any orphaned split rows from the DB
-        to avoid foreign key violations.
+    @staticmethod
+    def _is_descendant(
+        acct_id: int, potential_ancestor_id: int, accounts: dict,
+    ) -> bool:
+        """Check if *acct_id* is a descendant of *potential_ancestor_id*."""
+        while acct_id != 0:
+            acct = accounts.get(acct_id)
+            if acct is None:
+                return False
+            if acct.parent == potential_ancestor_id:
+                return True
+            if acct.parent is None:
+                return False
+            acct_id = acct.parent
+        return False
+
+    # ── Reassign children ───────────────────────────────────────
+
+    def reassign_children(self, acct_id: int, target_parent_id: int) -> None:
+        """Reparent all direct children of *acct_id* to *target_parent_id*."""
+        if acct_id == 0:
+            raise ValueError("Cannot reassign children of root account")
+        if acct_id == target_parent_id:
+            raise ValueError(
+                f"Cannot reassign children to the same account ({acct_id})"
+            )
+        if target_parent_id not in self.accounts:
+            raise ValueError(f"Target account {target_parent_id} not found")
+        if self._is_descendant(target_parent_id, acct_id, self.accounts):
+            raise ValueError(
+                "Cannot reassign to a descendant (would create cycle)"
+            )
+
+        for child_id, acct in list(self.accounts.items()):
+            if acct.parent == acct_id:
+                acct.parent = target_parent_id
+                self.db.update_account(
+                    child_id, acct.name, target_parent_id,
+                    acct.acct_type, acct.account_subtype,
+                )
+        self.db.reparent_children_in_db(acct_id, target_parent_id)
+
+    # ── Reassign transactions ──────────────────────────────────
+
+    def reassign_transactions(self, acct_id: int, target_acct_id: int) -> None:
+        """Migrate all splits referencing *acct_id* to *target_acct_id*."""
+        if acct_id == 0:
+            raise ValueError("Cannot reassign transactions from root account")
+        if acct_id == target_acct_id:
+            raise ValueError(
+                f"Cannot reassign to the same account ({acct_id})"
+            )
+        if target_acct_id not in self.accounts:
+            raise ValueError(f"Target account {target_acct_id} not found")
+
+        for txn in self.journal.transactions.values():
+            for s in txn.splits:
+                if s.account_id == acct_id:
+                    s.account_id = target_acct_id
+        self.db.reassign_splits_in_db(acct_id, target_acct_id)
+
+    # ── Delete account (with options) ──────────────────────────
+
+    def delete_account(self, acct_id: int) -> None:
+        """Remove an account and cascade-delete its children and transactions.
+
+        Does NOT check for children or referencing transactions — call
+        ``reassign_children()`` / ``reassign_transactions()`` first if you
+        want to migrate rather than cascade.
         """
         if acct_id == 0:
             raise ValueError("Cannot delete root account")
-        children = [a for a in self.accounts.values() if a.parent == acct_id]
-        if children:
-            raise ValueError(
-                f"Cannot delete '{self.accounts[acct_id].name}': "
-                f"has {len(children)} sub-account(s)"
-            )
+
+        # Cascade-delete children
+        child_ids = [aid for aid, a in self.accounts.items() if a.parent == acct_id]
+        for cid in child_ids:
+            self.delete_account(cid)
+
         # Delete any transactions that reference this account
         txn_ids_to_delete = []
         for txn_id, txn in self.journal.transactions.items():
@@ -180,8 +245,7 @@ class AccountManager:
                     break
         for txn_id in txn_ids_to_delete:
             self.delete_transaction(txn_id)
-        # Wipe any lingering splits in the DB that weren't cleaned up
-        # (e.g. if the transaction was never tracked in db_id_map).
+
         self.db._wipe_splits_for_account(acct_id)
         self.db.delete_account(acct_id)
         del self.accounts[acct_id]

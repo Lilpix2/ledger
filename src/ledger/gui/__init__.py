@@ -15,12 +15,12 @@ To launch:
     # or: ledger  (if installed via pip)
 """
 
-from .dialogs import AccountDialog, TransactionDialog, BuySellDialog
+from .dialogs import AccountDialog, TransactionDialog, BuySellDialog, DeleteAccountDialog
 from .reports import show_net_worth, show_summary, show_income_stmt
 from .reports import show_balance_sheet, show_re_statement, show_about
 
 __all__ = [
-    "AccountDialog", "TransactionDialog", "BuySellDialog",
+    "AccountDialog", "TransactionDialog", "BuySellDialog", "DeleteAccountDialog",
     "show_net_worth", "show_summary", "show_income_stmt",
     "show_balance_sheet", "show_re_statement", "show_about",
 ]
