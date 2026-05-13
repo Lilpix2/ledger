@@ -138,25 +138,76 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
             mgr.delete_transaction(txn_id)
 
     buyin = _ensure_account(mgr, "529 Contributions", 4, "INCOME")
+    div_income = _ensure_account(mgr, "529 Dividends", 4, "INCOME")
+    fee_expense = _ensure_account(mgr, "529 Fees", 5, "EXPENSE")
     parent = _ensure_account(mgr, "529 Plans", 1, "ASSET", "mesp")
 
-    total_cost_imported = 0
+    # ── Create sub-accounts for each ticker seen ───────────────
+    ticker_accts: dict[str, int] = {}
+    funded_tickers = {r.ticker for r in records if r.ticker}
+    for ticker in sorted(funded_tickers):
+        sub = _ensure_account(mgr, ticker, parent, "ASSET", "mesp")
+        ticker_accts[ticker] = sub
+        summary["accounts_created"] += 1
+
+    # ── Create individual journal entries ──────────────────────
+    for r in records:
+        ticker = r.ticker or "unknown"
+        sub = ticker_accts.get(ticker)
+        if sub is None:
+            continue
+        q = abs(r.quantity) if r.quantity else 0
+        amt = abs(int(round(float(r.amount) * 100))) if r.amount else 0
+        try:
+            dt = datetime.strptime(r.date, "%m/%d/%Y")
+        except ValueError:
+            continue
+
+        memo = (r.memo or "").lower()
+        is_closeout = any(w in memo for w in ("conversion", "realign", "system"))
+
+        try:
+            if r.check_num in ("BuyX", "Buy"):
+                mgr.add_transaction(
+                    dt, f"529 Buy {ticker}",
+                    [Split(sub, amt), Split(buyin, -amt)],
+                )
+                summary["entries_created"] += 1
+
+            elif r.check_num in ("SellX", "Sell"):
+                mgr.add_transaction(
+                    dt, f"529 Sell {ticker}",
+                    [Split(buyin, amt), Split(sub, -amt)],
+                )
+                summary["entries_created"] += 1
+
+            elif r.check_num == "ShrsIn" and amt > 0:
+                mgr.add_transaction(
+                    dt, f"529 Dividend {ticker}",
+                    [Split(sub, amt), Split(div_income, -amt)],
+                )
+                summary["entries_created"] += 1
+
+            elif r.check_num == "ShrsOut" and not is_closeout and q > 0:
+                # Partial transfer — use a small default amount
+                # (the real amount isn't in the QIF for these)
+                if amt > 0:
+                    mgr.add_transaction(
+                        dt, f"529 Transfer Out {ticker}",
+                        [Split(fee_expense, amt), Split(sub, -amt)],
+                    )
+                    summary["entries_created"] += 1
+
+        except Exception as e:
+            pass  # skip records that can't be journaled
+
+    # ── Set holdings from net-summary ──────────────────────────
     for ticker, f in sorted(funds.items()):
         if f["net_shares"] <= 0 or f["total_cost_cents"] <= 0:
             continue
-
-        sub = _ensure_account(mgr, ticker, parent, "ASSET", "mesp")
-        summary["accounts_created"] += 1
-
-        mgr.set_holding(sub, ticker, f["net_shares"], f["total_cost_cents"])
-        total_cost_imported += f["total_cost_cents"]
-
-        mgr.add_transaction(
-            f["last_date"] or datetime.now(),
-            f"529 {ticker} — {f['buys']} buys + {f['divs']} dividends",
-            [Split(sub, f["total_cost_cents"]), Split(buyin, -f["total_cost_cents"])],
-        )
-        summary["entries_created"] += 1
+        sub = ticker_accts.get(ticker)
+        if sub is not None:
+            mgr.set_holding(sub, ticker, f["net_shares"], f["total_cost_cents"])
 
     # ── Import prices (bulk, only latest per ticker) ────────
     latest_prices: dict[str, tuple[str, int]] = {}
