@@ -203,8 +203,7 @@ class TransactionDialog:
 
     def _build(self, parent: tk.Widget) -> None:
         dialog = tk.Toplevel(parent)
-        is_edit = self.edit_txn is not None
-        dialog.title("Edit Transaction" if is_edit else "New Transaction")
+        dialog.title("Edit Transaction" if self.edit_txn else "New Transaction")
         dialog.geometry("500x450")
         dialog.resizable(True, True)
         dialog.transient(parent)
@@ -216,16 +215,32 @@ class TransactionDialog:
 
         # ── Date ──────────────────────────────────────────────
         ttk.Label(frame, text="Date:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        date_var = tk.StringVar(
-            value=self.edit_txn.date.strftime(DATE_STR) if self.edit_txn
-                   else datetime.now().strftime(DATE_STR)
-        )
+        try:
+            default_date = (
+                self.edit_txn.date.strftime(DATE_STR)
+                if self.edit_txn else datetime.now().strftime(DATE_STR)
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "Date Error",
+                f"Could not format date: {e}\nUsing current date.", parent=parent,
+            )
+            default_date = datetime.now().strftime(DATE_STR)
+        date_var = tk.StringVar(value=default_date)
         date_entry = ttk.Entry(frame, textvariable=date_var, width=25)
         date_entry.grid(row=0, column=1, sticky=tk.W, pady=2)
 
         # ── Description ───────────────────────────────────────
         ttk.Label(frame, text="Description:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        desc_var = tk.StringVar(value=self.edit_txn.description if self.edit_txn else "")
+        try:
+            default_desc = self.edit_txn.description if self.edit_txn else ""
+        except Exception as e:
+            messagebox.showerror(
+                "Description Error",
+                f"Could not read description: {e}", parent=parent,
+            )
+            default_desc = ""
+        desc_var = tk.StringVar(value=default_desc)
         desc_entry = ttk.Entry(frame, textvariable=desc_var, width=40)
         desc_entry.grid(row=1, column=1, sticky=tk.EW, pady=2, columnspan=2)
         frame.columnconfigure(1, weight=1)

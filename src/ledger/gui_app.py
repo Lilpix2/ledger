@@ -497,11 +497,20 @@ class LedgerGUI(tk.Tk):
         TransactionDialog(self, self.manager, self._refresh_all)
 
     def _dialog_edit_transaction(self, txn_id: int) -> None:
+        from tkinter import messagebox
         txn = self.manager.journal.transactions.get(txn_id)
-        if txn:
+        if txn is None:
+            messagebox.showerror("Error", f"Transaction #{txn_id} not found")
+            return
+        try:
             TransactionDialog(
                 self, self.manager, self._refresh_all,
                 edit_txn=txn, edit_txn_id=txn_id,
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "Edit Error",
+                f"Failed to open edit dialog for #{txn_id}:\n{type(e).__name__}: {e}",
             )
 
     def _dialog_delete_transaction(self, txn_id: int) -> None:
