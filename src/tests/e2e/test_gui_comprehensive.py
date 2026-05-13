@@ -1514,7 +1514,10 @@ class TestCRUDThroughDialogs:
                     None,
                 )
                 assert delete_btn is not None, "Delete Account button not found"
+                # ttk.Button's command is scheduled via 'after idle' —
+                # flush idle callbacks so the Python callback runs.
                 delete_btn.invoke()
+                app.update_idletasks()
 
                 # ── Check for validation errors first ──
                 if errors_seen:
@@ -1623,6 +1626,7 @@ class TestCRUDThroughDialogs:
                 delete_btn = _find_btn(dlg)
                 if delete_btn:
                     delete_btn.invoke()
+                    app.update_idletasks()
 
                 # Both parent and child should be gone
                 assert parent not in app.manager.accounts
