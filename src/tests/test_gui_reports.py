@@ -349,7 +349,7 @@ class TestGUIApp:
             assert "Account Summary" in titles
             assert "Income Statement" in titles
             assert "Balance Sheet" in titles
-            assert "Retained Earnings" in titles
+            assert "Retained Earnings Statement" in titles
 
             # Verify proper numbers (no errors, no None)
             for title, msg in shown:
