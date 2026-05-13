@@ -1135,7 +1135,7 @@ class TestEdgeCaseReporting:
         )
         mgr.add_transaction(
             datetime(2026, 6, 1), "Depreciation",
-            [Split(deprec, 200000), Split(6, -200000)],
+            [Split(6, 200000), Split(deprec, -200000)],
         )
         mgr.generate_ledger()
         del mgr
