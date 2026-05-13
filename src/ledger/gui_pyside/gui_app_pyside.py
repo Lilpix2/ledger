@@ -106,6 +106,8 @@ class PortfolioTableModel(QAbstractTableModel):
             for holding in self._manager.get_holdings(bid):
                 cost = holding.cost_basis_cents
                 price = self._manager.get_price(holding.ticker, "latest")
+                if price is None:
+                    continue
                 mkt_val = int(holding.shares * price)
                 pnl = mkt_val - cost
                 pnl_pct = ((pnl / cost) * 100) if cost else 0.0
