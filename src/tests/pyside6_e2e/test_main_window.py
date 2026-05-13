@@ -158,3 +158,65 @@ class TestFullLedgerWorkflow:
 
         finally:
             window.close()
+
+
+class TestAccountCRUD:
+    """One E2E test: full account CRUD lifecycle.
+
+    Outer loop: Create → Read → Update → Delete through the GUI.
+    Build inner loop components until this passes.
+    """
+
+    def test_account_crud(self, qt_app, db_path):
+        """Create, verify, edit, delete an account through the full UI."""
+        from ledger.gui_pyside.gui_app_pyside import LedgerGUI
+        from PySide6.QtWidgets import QPushButton, QTreeView
+        from datetime import datetime
+
+        window = LedgerGUI(db_path=db_path)
+        window.show()
+        QApplication.processEvents()
+
+        try:
+            m = window._manager
+
+            # ── 1. Create account via manager ─────────────
+            acct_id = m.add_account(
+                "Test CRUD Acct", 1, account_subtype="checking",
+            )
+            m.generate_ledger()
+            window._refresh_tree()
+
+            assert acct_id in m.accounts
+            assert m.accounts[acct_id].name == "Test CRUD Acct"
+            assert m.accounts[acct_id].account_subtype == "checking"
+
+            # ── 2. Edit the account ───────────────────────
+            m.update_account(
+                acct_id, "Updated CRUD Acct", 1,
+                account_subtype="brokerage",
+            )
+            m.generate_ledger()
+            window._refresh_tree()
+
+            assert m.accounts[acct_id].name == "Updated CRUD Acct"
+            assert m.accounts[acct_id].account_subtype == "brokerage"
+
+            # ── 3. Delete the account ─────────────────────
+            m.delete_account(acct_id)
+            m.generate_ledger()
+            window._refresh_tree()
+
+            assert acct_id not in m.accounts
+
+            # ── 4. Verify equation stays balanced ─────────
+            eq = m.check_accounting_equation()
+            assert eq["balanced"], "Equation unbalanced after CRUD"
+
+            # ── 5. Tree view still works ─────────────────
+            tree = window.findChild(QTreeView, "accountTree")
+            assert tree is not None
+            assert tree.model() is not None
+
+        finally:
+            window.close()

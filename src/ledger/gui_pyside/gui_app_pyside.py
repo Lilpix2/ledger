@@ -225,6 +225,7 @@ class LedgerGUI(QMainWindow):
 
         for text in ["New Account", "New Transaction", "Refresh"]:
             btn = QPushButton(text)
+            btn.setObjectName(text.replace(" ", ""))
             btn.clicked.connect(lambda checked, t=text: self._on_toolbar(t))
             toolbar_layout.addWidget(btn)
         toolbar_layout.addStretch()
@@ -316,3 +317,8 @@ class LedgerGUI(QMainWindow):
             self._tree.setModel(self._tree_model)
             self._refresh_status()
             self._refresh_portfolio()
+
+    def _refresh_tree(self) -> None:
+        """Rebuild the account tree model from scratch."""
+        self._tree_model = self._build_tree_model()
+        self._tree.setModel(self._tree_model)
