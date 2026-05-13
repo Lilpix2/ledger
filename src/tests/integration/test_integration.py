@@ -412,3 +412,187 @@ class TestInvestmentLifecycle:
             f"A={eq['assets']}, L={eq['liabilities']}, "
             f"E={eq['equity']}+NI={eq['net_income']}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Delete Account — Persistence (delete with options)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestDeleteAccountPersistence:
+    """AccountManager delete/reassigned operations survive close/reopen."""
+
+    @pytest.fixture
+    def db_path(self) -> str:
+        path = tempfile.mktemp(suffix=".db")
+        yield path
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    def _seed(self, path: str):
+        """Create a manager with accounts + transactions for delete tests."""
+        mgr = AccountManager(path)
+        parent = mgr.add_account("Parent", 1)
+        child = mgr.add_account("Child", parent)
+        source = mgr.add_account("Source", 1)
+        target = mgr.add_account("Target", 1)
+        equity = 6
+        mgr.add_transaction(
+            datetime(2026, 6, 1), "Fund Source",
+            [Split(source, 100000), Split(equity, -100000)],
+        )
+        mgr.generate_ledger()
+        return mgr, parent, child, source, target, equity
+
+    # ── Simple delete — no children, no txns ────────────────
+
+    def test_simple_delete_persists(self, db_path: str):
+        """Delete a leaf account → gone on reopen."""
+        mgr = AccountManager(db_path)
+        acct = mgr.add_account("TempLeaf", 1)
+        mgr.delete_account(acct)
+        del mgr
+
+        mgr2 = AccountManager(db_path)
+        assert acct not in mgr2.accounts, "Deleted account should not persist"
+
+    # ── Cascade delete — children ───────────────────────────
+
+    def test_cascade_children_persists(self, db_path: str):
+        """Delete parent cascades children → both gone on reopen."""
+        mgr = AccountManager(db_path)
+        parent = mgr.add_account("Parent", 1)
+        child = mgr.add_account("Child", parent)
+        mgr.delete_account(parent)
+        del mgr
+
+        mgr2 = AccountManager(db_path)
+        assert parent not in mgr2.accounts
+        assert child not in mgr2.accounts
+
+    # ── Cascade delete — transactions ───────────────────────
+
+    def test_cascade_transactions_persists(self, db_path: str):
+        """Delete account cascades its transactions → both gone on reopen."""
+        mgr = AccountManager(db_path)
+        src = mgr.add_account("Src", 1)
+        equity = 6
+        mgr.add_transaction(
+            datetime(2026, 6, 1), "Will cascade",
+            [Split(src, 50000), Split(equity, -50000)],
+        )
+        mgr.generate_ledger()
+
+        txn_count_before = len(mgr.journal.transactions)
+        mgr.delete_account(src)
+        del mgr
+
+        mgr2 = AccountManager(db_path)
+        remaining = len(mgr2.journal.transactions)
+        assert remaining < txn_count_before, (
+            f"Expected fewer transactions after cascade, got {remaining}"
+        )
+        for txn in mgr2.journal.transactions.values():
+            assert txn.description != "Will cascade", "Cascaded txn survived reopen"
+
+    # ── Reassign children ───────────────────────────────────
+
+    def test_reassign_children_persists(self, db_path: str):
+        """Children reparented → new parent persists on reopen."""
+        mgr, parent, child, *_ = self._seed(db_path)
+        new_parent = mgr.add_account("NewParent", 1)
+
+        mgr.reassign_children(parent, new_parent)
+        mgr.delete_account(parent)
+        del mgr
+
+        mgr2 = AccountManager(db_path)
+        # Child should still exist and point to NewParent
+        assert child in mgr2.accounts, "Child should persist"
+        assert parent not in mgr2.accounts, "Old parent should be gone"
+        assert mgr2.accounts[child].parent == new_parent, (
+            f"Child parent={mgr2.accounts[child].parent}, expected {new_parent}"
+        )
+
+    def test_reassign_children_no_delete_persists(self, db_path: str):
+        """Reparent alone persists even without deleting the old parent."""
+        mgr, parent, child, *_ = self._seed(db_path)
+        new_parent = mgr.add_account("NewParent", 1)
+
+        mgr.reassign_children(parent, new_parent)
+        del mgr
+
+        mgr2 = AccountManager(db_path)
+        assert mgr2.accounts[child].parent == new_parent, (
+            "Child should point to new parent after reopen"
+        )
+
+    # ── Reassign transactions ───────────────────────────────
+
+    def test_reassign_transactions_persists(self, db_path: str):
+        """Splits migrated → balance moves to target on reopen."""
+        mgr, parent, child, source, target, equity = self._seed(db_path)
+
+        # Fund source with another txn
+        mgr.add_transaction(
+            datetime(2026, 6, 2), "Extra fund",
+            [Split(source, 25000), Split(equity, -25000)],
+        )
+        mgr.generate_ledger()
+        bal_before = mgr.get_display_balance(source)
+
+        mgr.reassign_transactions(source, target)
+        mgr.delete_account(source)
+        del mgr
+
+        mgr2 = AccountManager(db_path)
+        assert source not in mgr2.accounts
+        assert target in mgr2.accounts
+        # Target should have the balance that source had
+        assert mgr2.get_display_balance(target) == bal_before
+
+    def test_reassign_transactions_no_delete_persists(self, db_path: str):
+        """Reassign alone persists without deleting the source."""
+        mgr, _, _, source, target, _ = self._seed(db_path)
+
+        mgr.reassign_transactions(source, target)
+        mgr.generate_ledger()
+        source_bal = mgr.get_display_balance(source)
+        del mgr
+
+        mgr2 = AccountManager(db_path)
+        # Source should still exist and have 0 balance (all splits migrated)
+        assert source in mgr2.accounts
+        assert mgr2.get_display_balance(source) == source_bal
+
+    # ── Both reassigned then delete ─────────────────────────
+
+    def test_both_reassigned_then_delete_persists(self, db_path: str):
+        """Children reparented + txns migrated + source deleted → all persist."""
+        mgr, parent, child, source, target, equity = self._seed(db_path)
+        child_target = mgr.add_account("ChildTarget", 1)
+
+        mgr.reassign_children(parent, child_target)
+        mgr.reassign_transactions(source, target)
+        mgr.generate_ledger()
+        expected_txn_bal = mgr.get_display_balance(target)
+
+        mgr.delete_account(parent)
+        mgr.delete_account(source)
+        del mgr
+
+        mgr2 = AccountManager(db_path)
+        # Children
+        assert parent not in mgr2.accounts
+        assert child in mgr2.accounts
+        assert mgr2.accounts[child].parent == child_target
+        # Transactions
+        assert source not in mgr2.accounts
+        assert target in mgr2.accounts
+        assert mgr2.get_display_balance(target) == expected_txn_bal
+        # Equation should balance
+        mgr2.generate_ledger()
+        eq = mgr2.check_accounting_equation()
+        assert eq["balanced"], "Equation unbalanced after full reassign+delete"
