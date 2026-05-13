@@ -647,21 +647,47 @@ class AccountManager:
         income_by_acct: dict[int, int] = {}
         expense_by_acct: dict[int, int] = {}
 
-        for txn in self.journal.transactions.values():
-            if start_date and txn.date < start_date:
-                continue
-            if end_date and txn.date > end_date:
-                continue
+        # Without date filters: use account balances (matches tree, no double-counting
+        # from debit splits on credit-normal income accounts).
+        # Use leaf accounts only to avoid counting parent + children.
+        tree = self.build_tree()
+        leaf_ids = set()
+        for pid, children in tree.items():
+            for cid in children:
+                if cid not in tree:
+                    leaf_ids.add(cid)
 
-            for s in txn.splits:
-                # Credit legs (negative splits) on income accounts
-                if s.amount < 0 and s.account_id in income_ids:
-                    aid = s.account_id
-                    income_by_acct[aid] = income_by_acct.get(aid, 0) + (-s.amount)
-                # Debit legs (positive splits) on expense accounts
-                if s.amount > 0 and s.account_id in expense_ids:
-                    aid = s.account_id
-                    expense_by_acct[aid] = expense_by_acct.get(aid, 0) + s.amount
+        if not start_date and not end_date:
+            for aid in sorted(income_ids):
+                if aid not in leaf_ids:
+                    continue
+                if aid in self.accounts:
+                    bal = self.get_display_balance(aid)
+                    if bal > 0:
+                        income_by_acct[aid] = bal
+            for aid in sorted(expense_ids):
+                if aid not in leaf_ids:
+                    continue
+                if aid in self.accounts:
+                    bal = self.get_display_balance(aid)
+                    if bal > 0:
+                        expense_by_acct[aid] = bal
+        else:
+            for txn in self.journal.transactions.values():
+                if start_date and txn.date < start_date:
+                    continue
+                if end_date and txn.date > end_date:
+                    continue
+
+                for s in txn.splits:
+                    # Credit legs (negative splits) on income accounts
+                    if s.amount < 0 and s.account_id in income_ids:
+                        aid = s.account_id
+                        income_by_acct[aid] = income_by_acct.get(aid, 0) + (-s.amount)
+                    # Debit legs (positive splits) on expense accounts
+                    if s.amount > 0 and s.account_id in expense_ids:
+                        aid = s.account_id
+                        expense_by_acct[aid] = expense_by_acct.get(aid, 0) + s.amount
 
         def _to_sorted(d: dict[int, int]) -> list[tuple[str, int]]:
             return sorted(
