@@ -379,3 +379,17 @@ class LedgerGUI(QMainWindow):
     def _show_about(self) -> None:
         import ledger.gui_pyside.reports as reports_mod
         reports_mod.show_about(self)
+
+
+if __name__ == "__main__":
+    import sys
+    import os
+    from PySide6.QtWidgets import QApplication
+    from ledger.controllers.accounts import AccountManager
+
+    app = QApplication(sys.argv)
+    db_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "journal.db")
+    manager = AccountManager(db_path)
+    window = LedgerGUI(manager)
+    window.show()
+    sys.exit(app.exec())
