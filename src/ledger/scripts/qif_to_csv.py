@@ -223,12 +223,12 @@ def parse_qif(text: str) -> list[QIFRecord]:
             current.ticker = value
         elif code == "I":
             try:
-                current.price = float(value)
+                current.price = float(value.replace(",", ""))
             except ValueError:
                 pass
         elif code == "Q":
             try:
-                current.quantity = float(value)
+                current.quantity = float(value.replace(",", ""))
             except ValueError:
                 pass
         # Fields we don't store

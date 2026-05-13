@@ -78,14 +78,15 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
             f["buys"] += 1
 
         elif r.check_num in ("SellX", "Sell"):
-            # Pro-rata cost reduction: remove same % of cost as shares
-            old_shares = f["net_shares"]  # before subtracting
-            old_cost = f["total_cost_cents"]
-            if old_shares > 0:
-                fraction = q / (old_shares + q)
+            if f["net_shares"] > 0:
+                old_shares = f["net_shares"]
+                old_cost = f["total_cost_cents"]
+                sell_shares = min(q, old_shares)
+                # Fraction of current position being sold
+                fraction = sell_shares / old_shares
                 removed = int(round(old_cost * fraction))
                 f["total_cost_cents"] -= min(removed, old_cost)
-            f["net_shares"] -= q
+                f["net_shares"] -= sell_shares
             f["sells"] += 1
 
         elif r.check_num == "ShrsIn":
@@ -94,20 +95,22 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
             f["divs"] += 1
 
         elif r.check_num == "ShrsOut":
-            if q == 0:
-                # Age-based rollover or system conversion: fund is closed,
-                # value moved to a new year's fund via ShrsIn.
+            memo = (r.memo or "").lower()
+            if "conversion" in memo or "realign" in memo or "system" in memo:
+                # Age-based rollover: fund is closed, value moved to
+                # a new year's fund via ShrsIn. Zero completely.
                 f["net_shares"] = 0.0
                 f["total_cost_cents"] = 0
             else:
-                # Actual shares removed (transfer, fee, etc.)
-                old_shares = f["net_shares"]
-                old_cost = f["total_cost_cents"]
-                if old_shares > 0:
-                    fraction = q / (old_shares + q)
+                # Partial transfer (e.g., to Eva's MESP) — pro-rata
+                if f["net_shares"] > 0:
+                    old_shares = f["net_shares"]
+                    old_cost = f["total_cost_cents"]
+                    sell_shares = min(q, old_shares)
+                    fraction = sell_shares / old_shares
                     removed = int(round(old_cost * fraction))
                     f["total_cost_cents"] -= min(removed, old_cost)
-                f["net_shares"] -= q
+                    f["net_shares"] -= sell_shares
             f["sells"] += 1
 
     summary = {
