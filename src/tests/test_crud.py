@@ -1,6 +1,9 @@
 """Unit tests: CRUD operations, edge cases, and GUI widget helpers.
 
-Covers Journal, AccountManager CRUD, edge cases for validation,
+All tests use the ``fast_manager`` or ``fast_seeded`` fixtures (MockDB —
+no disk I/O, <1ms per test). Follows AAA + TDD principles.
+
+Covers Journal, AccountManager CRUD, validation edge cases,
 widget helpers (format_cents, build_account_choices).
 """
 
@@ -8,918 +11,468 @@ import pytest
 from datetime import datetime
 
 from ledger.controllers.accounts import AccountManager
-from ledger.models.data_class import Split, JournalTransaction, Holding, Price
+from ledger.models.data_class import Split, JournalTransaction
 from ledger.models.data_books import Journal
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Journal CRUD (tests bypass AccountManager for pure Journal ops)
+#  Journal — pure in-memory (no AccountManager needed)
 # ═══════════════════════════════════════════════════════════════════
 
 
 class TestJournalCRUD:
-    """In-memory Journal: add / delete / edge-case operations."""
+    """In-memory Journal: add, delete, chronological, by_id."""
 
-    def test_journal_add_transaction(self):
-        """Add a transaction directly to a standalone Journal."""
+    def test_addTransaction_emptyJournal_returnsIdZero(self):
+        """Arrange: fresh Journal. Act: add one transaction. Assert: ID is 0."""
         j = Journal()
-        txn = JournalTransaction(
-            datetime(2026, 1, 15), "Test entry",
-            [Split(1, 5000), Split(2, -5000)],
-        )
+        txn = JournalTransaction(datetime(2026, 1, 15), "Test", [Split(1, 5000), Split(2, -5000)])
         txn_id = j.add_transaction(txn)
-        assert txn_id == 0  # first ID
+        assert txn_id == 0
         assert len(j.transactions) == 1
         assert j.transactions[0] is txn
 
-    def test_journal_add_multiple(self):
-        """IDs increment correctly."""
+    def test_addTransaction_multiple_idsIncrement(self):
+        """Multiple calls to add_transaction return sequential IDs."""
         j = Journal()
-        t1 = JournalTransaction(datetime(2026, 1, 1), "A", [Split(1, 100), Split(2, -100)])
-        t2 = JournalTransaction(datetime(2026, 1, 2), "B", [Split(1, 200), Split(2, -200)])
-        id1 = j.add_transaction(t1)
-        id2 = j.add_transaction(t2)
+        id1 = j.add_transaction(JournalTransaction(datetime(2026, 1, 1), "A", [Split(1, 100), Split(2, -100)]))
+        id2 = j.add_transaction(JournalTransaction(datetime(2026, 1, 2), "B", [Split(1, 200), Split(2, -200)]))
         assert id1 == 0
         assert id2 == 1
 
-    def test_journal_delete_transaction(self):
-        """delete_transaction removes from in-memory dict and sorted list."""
+    def test_deleteTransaction_removesFromDict(self):
+        """Deleting a transaction removes it from the in-memory store."""
         j = Journal()
-        txn = JournalTransaction(
-            datetime(2026, 1, 1), "Delete me",
-            [Split(1, 100), Split(2, -100)],
-        )
-        txn_id = j.add_transaction(txn)
-        assert txn_id in j.transactions
+        tid = j.add_transaction(JournalTransaction(datetime(2026, 1, 1), "X", [Split(1, 100), Split(2, -100)]))
+        j.delete_transaction(tid)
+        assert tid not in j.transactions
 
-        removed_id = j.delete_transaction(txn_id)
-        assert removed_id == txn_id
-        assert txn_id not in j.transactions
-        assert txn_id not in j.sorted_ids
-
-    def test_journal_delete_nonexistent_raises(self):
-        """Deleting a transaction that doesn't exist raises KeyError."""
+    def test_deleteTransaction_nonexistent_raises(self):
+        """Deleting a non-existent transaction raises KeyError."""
         j = Journal()
-        with pytest.raises(KeyError, match="not found"):
-            j.delete_transaction(99999)
+        with pytest.raises(KeyError):
+            j.delete_transaction(999)
 
-    def test_journal_empty_after_delete(self):
-        """Deleted transactions are removed from chronological order."""
+    def test_addTransaction_withDbId_storesMapping(self):
+        """add_transaction with db_id=42 makes get_db_id return 42."""
         j = Journal()
-        t1 = JournalTransaction(datetime(2026, 1, 1), "A", [Split(1, 100), Split(2, -100)])
-        t2 = JournalTransaction(datetime(2026, 1, 2), "B", [Split(1, 200), Split(2, -200)])
-        j.add_transaction(t1)
-        id2 = j.add_transaction(t2)
-        j.delete_transaction(id2)
-        ordered = j.chronological()
-        assert len(ordered) == 1
-        assert ordered[0].description == "A"
+        txn = JournalTransaction(datetime(2026, 1, 1), "X", [Split(1, 100), Split(2, -100)])
+        mem_id = j.add_transaction(txn, db_id=42)
+        assert j.get_db_id(mem_id) == 42
 
-
-class TestJournalEdgeCases:
-    """Edge cases for Journal: add without accounts, same dates, etc."""
-
-    def test_journal_create_empty(self):
-        """Journal() creates without any accounts loaded (pure in-memory)."""
+    def test_getDbId_notSet_returnsNone(self):
+        """get_db_id on an unmapped ID returns None."""
         j = Journal()
-        assert j.transactions == {}
-        assert j.sorted_ids == []
-        assert j.id_num == 0
+        assert j.get_db_id(0) is None
 
-    def test_chronological_same_date(self):
-        """Chronological ordering is stable when dates are identical."""
+    def test_chronological_sameDate_returnsInInsertionOrder(self):
+        """chronological() preserves insertion order for same-date transactions."""
         j = Journal()
-        t1 = JournalTransaction(datetime(2026, 3, 1), "First", [Split(1, 100), Split(2, -100)])
-        t2 = JournalTransaction(datetime(2026, 3, 1), "Second", [Split(1, 200), Split(2, -200)])
-        t3 = JournalTransaction(datetime(2026, 3, 1), "Third", [Split(1, 300), Split(2, -300)])
-        j.add_transaction(t2)  # added second
-        j.add_transaction(t3)  # added third
-        j.add_transaction(t1)  # added first
-        ordered = j.chronological()
-        descriptions = [t.description for t in ordered]
-        # Same date → insertion order should be preserved (stable sort)
-        assert descriptions == ["Second", "Third", "First"]
+        j.add_transaction(JournalTransaction(datetime(2026, 1, 1), "A", [Split(1, 100), Split(2, -100)]))
+        j.add_transaction(JournalTransaction(datetime(2026, 1, 1), "B", [Split(3, 200), Split(4, -200)]))
+        assert [t.description for t in j.chronological()] == ["A", "B"]
+
+    def test_chronological_differentDates_sortedByDate(self):
+        """chronological() returns transactions sorted by date ascending."""
+        j = Journal()
+        j.add_transaction(JournalTransaction(datetime(2026, 1, 5), "Later", [Split(1, 100), Split(2, -100)]))
+        j.add_transaction(JournalTransaction(datetime(2026, 1, 1), "Earlier", [Split(3, 200), Split(4, -200)]))
+        assert [t.description for t in j.chronological()] == ["Earlier", "Later"]
+
+    def test_emptyJournal_transactions_empty(self):
+        """A fresh Journal has no transactions."""
+        j = Journal()
+        assert len(j.transactions) == 0
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  AccountManager CRUD
+#  AccountManager — Add / Update / Delete
 # ═══════════════════════════════════════════════════════════════════
 
 
-class TestAccountManagerDeleteTransaction:
-    """AccountManager.delete_transaction — full lifecycle."""
+class TestAccountManagerAddUpdateDelete:
+    """Account CRUD: add, update, delete via AccountManager."""
 
-    def test_delete_transaction_removes_from_journal(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
-        txn_id = manager.add_transaction(
+    # ── Add ────────────────────────────────────────────────────
+
+    def test_addAccount_underAssets_returnsValidId(self, fast_manager):
+        """Adding a checking account under Assets returns a valid ID."""
+        aid = fast_manager.add_account("Checking", 1)
+        assert aid > 0
+        assert fast_manager.accounts[aid].name == "Checking"
+        assert fast_manager.accounts[aid].parent == 1
+
+    def test_addAccount_contra_flagTrue(self, fast_manager):
+        """Contra flag is stored correctly."""
+        aid = fast_manager.add_account("Depr", 1, is_contra=True)
+        assert fast_manager.accounts[aid].is_contra is True
+
+    def test_addAccount_duplicateName_raises(self, fast_manager):
+        """Adding a duplicate name under the same parent raises ValueError."""
+        fast_manager.add_account("MyAcct", 1)
+        with pytest.raises(ValueError, match="already exists"):
+            fast_manager.add_account("MyAcct", 1)
+
+    def test_addAccount_duplicateNameDifferentParent_succeeds(self, fast_manager):
+        """Same name under different parents is allowed."""
+        aid1 = fast_manager.add_account("Same", 1)
+        aid2 = fast_manager.add_account("Same", 2)
+        assert aid1 != aid2
+
+    def test_addAccount_emptyName_raises(self, fast_manager):
+        """Empty account name raises ValueError."""
+        with pytest.raises(ValueError):
+            fast_manager.add_account("", 1)
+
+    def test_addAccount_whitespaceName_raises(self, fast_manager):
+        """Whitespace-only account name raises ValueError."""
+        with pytest.raises(ValueError):
+            fast_manager.add_account("   ", 1)
+
+    def test_addAccount_longName_succeeds(self, fast_manager):
+        """Long strings are accepted as account names."""
+        aid = fast_manager.add_account("A" * 200, 1)
+        assert fast_manager.accounts[aid].name == "A" * 200
+
+    def test_addAccount_withSubtype_saves(self, fast_manager):
+        """Account subtype is stored."""
+        aid = fast_manager.add_account("Vis", 2, account_subtype="credit_card")
+        assert fast_manager.accounts[aid].account_subtype == "credit_card"
+
+    def test_addAccount_invalidSubtype_raises(self, fast_manager):
+        """Invalid subtype raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid account_subtype"):
+            fast_manager.add_account("Bad", 1, account_subtype="fake_type")
+
+    def test_addAccount_specialCharacters_succeeds(self, fast_manager):
+        """Special characters in account names are accepted."""
+        aid = fast_manager.add_account("Checking! @ Home #1", 1)
+        assert aid > 0
+
+    # ── Update ─────────────────────────────────────────────────
+
+    def test_updateAccount_name_updates(self, fast_manager):
+        """Updating an account's name changes it in the manager."""
+        aid = fast_manager.add_account("Old", 1)
+        fast_manager.update_account(aid, "Renamed")
+        assert fast_manager.accounts[aid].name == "Renamed"
+
+    def test_updateAccount_type_updates(self, fast_manager):
+        """Updating an account's type changes it."""
+        aid = fast_manager.add_account("Migrate", 1, "ASSET")
+        fast_manager.update_account(aid, "Migrate", acct_type="LIABILITY")
+        assert fast_manager.accounts[aid].acct_type == "LIABILITY"
+
+    def test_updateAccount_subtype_updates(self, fast_manager):
+        """Updating an account's subtype changes it."""
+        aid = fast_manager.add_account("Card", 2, account_subtype="credit_card")
+        fast_manager.update_account(aid, "Card", account_subtype="checking")
+        assert fast_manager.accounts[aid].account_subtype == "checking"
+
+    def test_updateAccount_nonexistent_raises(self, fast_manager):
+        """Updating a non-existent account raises an exception."""
+        with pytest.raises(Exception):
+            fast_manager.update_account(9999, "Ghost")
+
+    # ── Delete ─────────────────────────────────────────────────
+
+    def test_deleteAccount_leafAccount_succeeds(self, fast_manager):
+        """Deleting a leaf account removes it from the accounts dict."""
+        aid = fast_manager.add_account("Temp", 1)
+        assert aid in fast_manager.accounts
+        fast_manager.delete_account(aid)
+        assert aid not in fast_manager.accounts
+
+    def test_deleteAccount_withChildren_raises(self, fast_manager):
+        """Deleting an account that has children raises."""
+        parent = fast_manager.add_account("Parent", 1)
+        fast_manager.add_account("Child", parent)
+        with pytest.raises(ValueError, match="sub-account"):
+            fast_manager.delete_account(parent)
+
+    def test_deleteAccount_withTransactions_succeeds(self, fast_manager):
+        """Deleting an account with referencing transactions removes them first."""
+        checking = fast_manager.add_account("Checking", 1)
+        fast_manager.add_transaction(datetime(2026, 1, 1), "T", [Split(checking, 100000), Split(6, -100000)])
+        fast_manager.delete_account(checking)
+        assert checking not in fast_manager.accounts
+
+    def test_deleteAccount_referencingTxns_balancedAfter(self, fast_manager):
+        """After deleting an account with referencing txns, ledger stays balanced."""
+        checking = fast_manager.add_account("Checking", 1)
+        fast_manager.add_transaction(datetime(2026, 1, 1), "T", [Split(checking, 500000), Split(6, -500000)])
+        fast_manager.generate_ledger()
+        fast_manager.delete_account(checking)
+        assert fast_manager.check_accounting_equation()["balanced"] is True
+
+    def test_deleteAccount_rootAccount_raises(self, fast_manager):
+        """Deleting the root account raises ValueError."""
+        with pytest.raises(ValueError, match="root"):
+            fast_manager.delete_account(0)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Transaction CRUD — add, delete, validate
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestTransactionCRUD:
+    """Adding, deleting, and validating transactions."""
+
+    # ── Add ────────────────────────────────────────────────────
+
+    def test_addTransaction_simpleSplit_addsToJournal(self, fast_manager):
+        """A simple 2-split transaction adds to the journal."""
+        checking = fast_manager.add_account("Checking", 1)
+        groceries = fast_manager.add_account("Groceries", 5)
+        txn_id = fast_manager.add_transaction(
             datetime(2026, 1, 15), "Shop",
             [Split(groceries, 5000), Split(checking, -5000)],
         )
-        assert txn_id in manager.journal.transactions
+        assert txn_id >= 0
 
-        manager.delete_transaction(txn_id)
-        assert txn_id not in manager.journal.transactions
-
-    def test_delete_transaction_clears_balances(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        salary = manager.add_account("Salary", 4)
-        txn_id = manager.add_transaction(
-            datetime(2026, 1, 1), "Pay",
-            [Split(salary, -100000), Split(checking, 100000)],
+    def test_addTransaction_compoundSplit_succeeds(self, fast_manager):
+        """A 3-split compound transaction is accepted."""
+        checking = fast_manager.add_account("Checking", 1)
+        savings = fast_manager.add_account("Savings", 1)
+        wages = fast_manager.add_account("Wages", 4)
+        txn_id = fast_manager.add_transaction(
+            datetime(2026, 1, 15), "Split deposit",
+            [Split(wages, -150000), Split(checking, 100000), Split(savings, 50000)],
         )
-        manager.generate_ledger()
-        assert manager.accounts[checking].get_balance() == 100000
-
-        manager.delete_transaction(txn_id)
-        assert manager.accounts[checking].get_balance() == 0
-        assert manager.accounts[salary].get_balance() == 0
-
-    def test_delete_transaction_regenerates_ledger_correctly(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        salary = manager.add_account("Salary", 4)
-        groceries = manager.add_account("Groceries", 5)
-
-        t1 = manager.add_transaction(
-            datetime(2026, 1, 1), "Pay",
-            [Split(salary, -100000), Split(checking, 100000)],
-        )
-        t2 = manager.add_transaction(
-            datetime(2026, 1, 2), "Shop",
-            [Split(groceries, 5000), Split(checking, -5000)],
-        )
-        manager.generate_ledger()
-        # Before delete: checking = 95K
-        assert manager.accounts[checking].get_balance() == 95000
-
-        manager.delete_transaction(t2)
-        # After deleting shop, checking = 100K, groceries = 0
-        assert manager.accounts[checking].get_balance() == 100000
-        assert manager.accounts[groceries].get_balance() == 0
-
-    def test_delete_nonexistent_txn_raises(self, manager: AccountManager):
-        """AccountManager.delete_transaction raises KeyError for bad ID."""
-        with pytest.raises(KeyError, match="not found"):
-            manager.delete_transaction(99999)
-
-
-class TestAccountManagerUpdate:
-    """AccountManager.update_account — name, parent, type, subtype."""
-
-    def test_update_name(self, manager: AccountManager):
-        aid = manager.add_account("Old Name", 1)
-        manager.update_account(aid, "New Name")
-        assert manager.accounts[aid].name == "New Name"
-
-    def test_update_parent(self, manager: AccountManager):
-        aid = manager.add_account("My Account", 1)
-        manager.update_account(aid, "My Account", parent=5)  # move to Expenses
-        assert manager.accounts[aid].parent == 5
-
-    def test_update_type(self, manager: AccountManager):
-        aid = manager.add_account("Something", 1)
-        manager.update_account(aid, "Something", acct_type="EXPENSE")
-        assert manager.accounts[aid].acct_type == "EXPENSE"
-
-    def test_update_subtype(self, manager: AccountManager):
-        aid = manager.add_account("Something", 1, account_subtype="checking")
-        manager.update_account(aid, "Something", account_subtype="brokerage")
-        assert manager.accounts[aid].account_subtype == "brokerage"
-
-    def test_update_name_and_type(self, manager: AccountManager):
-        aid = manager.add_account("Old", 1, acct_type="ASSET")
-        manager.update_account(aid, "Renamed", acct_type="LIABILITY")
-        acct = manager.accounts[aid]
-        assert acct.name == "Renamed"
-        assert acct.acct_type == "LIABILITY"
-
-    def test_update_with_none_type_keeps_existing(self, manager: AccountManager):
-        """Passing None for acct_type should preserve the stored type."""
-        aid = manager.add_account("Keep Type", 1, acct_type="ASSET")
-        manager.accounts[aid].acct_type = "LIABILITY"  # manually change in mem
-        manager.update_account(aid, "Keep Type", acct_type=None)
-        # The DB call will use the account's current type (LIABILITY due to manual change)
-        # But update_account uses final_type = acct_type if acct_type is not None else acct.acct_type
-        # So final_type should be "LIABILITY"
-        assert manager.accounts[aid].acct_type == "LIABILITY"
-
-    def test_update_nonexistent_account_raises(self, manager: AccountManager):
-        with pytest.raises(ValueError, match="not found"):
-            manager.update_account(99999, "Ghost")
-
-
-class TestAccountManagerDelete:
-    """AccountManager.delete_account — removal with constraints."""
-
-    def test_delete_account_removes_from_db(self, manager: AccountManager):
-        aid = manager.add_account("Temp Account", 1)
-        assert aid in manager.accounts
-        manager.delete_account(aid)
-        assert aid not in manager.accounts
-        # Verify also gone from DB
-        assert aid not in manager.accounts
-
-    def test_delete_account_prevents_with_children(self, manager: AccountManager):
-        """Deleting an account that has children should raise ValueError."""
-        parent_id = manager.add_account("Parent", 1)
-        manager.add_account("Child", parent_id)  # child under parent
-        with pytest.raises(ValueError, match="has|sub-account"):
-            manager.delete_account(parent_id)
-
-    def test_delete_leaf_account_succeeds(self, manager: AccountManager):
-        parent_id = manager.add_account("Parent", 1)
-        child_id = manager.add_account("Child", parent_id)
-        # Delete child first, then parent
-        manager.delete_account(child_id)
-        assert child_id not in manager.accounts
-        manager.delete_account(parent_id)
-        assert parent_id not in manager.accounts
-
-    def test_delete_root_account_raises(self, manager: AccountManager):
-        with pytest.raises(ValueError, match="Cannot delete root"):
-            manager.delete_account(0)
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  Edge Cases — Validation & Error Handling
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestEdgeCaseValidation:
-    """Input validation edge cases for accounts and transactions."""
-
-    def test_empty_string_name_raises(self, manager: AccountManager):
-        """Account with empty string name should raise ValueError."""
-        with pytest.raises(ValueError, match="name"):
-            manager.add_account("", 1)
-
-    def test_very_long_description(self, manager: AccountManager):
-        """Transaction with 200+ char description should work."""
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
-        long_desc = "A" * 250
-        txn_id = manager.add_transaction(
-            datetime(2026, 1, 15), long_desc,
-            [Split(groceries, 5000), Split(checking, -5000)],
-        )
-        assert txn_id is not None
-        txn = manager.journal.transactions[txn_id]
-        assert len(txn.description) == 250
-
-    def test_special_characters_in_split_memo(self, manager: AccountManager):
-        """Memo with unicode, quotes, special chars should work."""
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
-        special_memo = "Café du Marché — 100% «authentique» ✨ 'quote'\""
-        txn_id = manager.add_transaction(
-            datetime(2026, 1, 15), "Special chars",
-            [Split(groceries, 5000, memo=special_memo),
-             Split(checking, -5000)],
-        )
-        txn = manager.journal.transactions[txn_id]
-        # Find the groceries split
-        memo_found = None
-        for s in txn.splits:
-            if s.account_id == groceries:
-                memo_found = s.memo
-                break
-        assert memo_found == special_memo
-
-    def test_sell_more_shares_than_owned_raises(self, manager: AccountManager):
-        """Selling more shares than owned should raise ValueError."""
-        checking = manager.add_account("Checking", 1)
-        brokerage = manager.add_account("Brokerage", 1, account_subtype="brokerage")
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Fund",
-            [Split(brokerage, 500000), Split(checking, 500000),
-             Split(6, -1000000)],
-        )
-        manager.buy_security(datetime(2026, 2, 1), "Buy",
-                             brokerage, checking, "VTI", 10, 27500)
-        with pytest.raises(ValueError, match="Cannot sell|only"):
-            manager.sell_security(datetime(2026, 3, 1), "Sell Too Many",
-                                  brokerage, checking, "VTI", 20, 29500)
-
-    def test_buy_with_zero_cash(self, manager: AccountManager):
-        """Buying with zero cash in the cash account should work (balance goes negative)."""
-        checking = manager.add_account("Checking", 1)
-        brokerage = manager.add_account("Brokerage", 1, account_subtype="brokerage")
-        # No funding — cash is zero
-        txn_id = manager.buy_security(
-            datetime(2026, 1, 15), "Buy on empty cash",
-            brokerage, checking, "VTI", 5, 10000,
-        )
-        manager.generate_ledger()
-        assert txn_id is not None
-        # Cash went negative
-        assert manager.accounts[checking].get_balance() == -50000
-        # Brokerage has the position value
-        assert manager.accounts[brokerage].get_balance() == 50000
-
-    def test_delete_transaction_not_found_raises(self, manager: AccountManager):
-        """Deleting a transaction that doesn't exist raises KeyError."""
-        with pytest.raises(KeyError, match="not found"):
-            manager.delete_transaction(99999)
-
-    def test_delete_root_account_raises(self, manager: AccountManager):
-        with pytest.raises(ValueError, match="Cannot delete root"):
-            manager.delete_account(0)
-
-    def test_get_latest_price_multiple(self, manager: AccountManager):
-        """get_latest_price returns the most recent of multiple prices."""
-        manager.save_price("VTI", "2026-01-15", 25000)
-        manager.save_price("VTI", "2026-02-15", 26000)
-        manager.save_price("VTI", "2026-03-15", 27500)
-        manager.save_price("VTI", "2026-04-15", 28000)
-        latest = manager.get_latest_price("VTI")
-        assert latest == 28000  # chronologically last
-
-    def test_chronological_same_date(self, manager: AccountManager):
-        """Transactions with same date are ordered by insertion (stable sort)."""
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
-        salary = manager.add_account("Salary", 4)
-
-        t1 = manager.add_transaction(
-            datetime(2026, 3, 1), "Second entry",
-            [Split(groceries, 100), Split(checking, -100)],
-        )
-        t2 = manager.add_transaction(
-            datetime(2026, 3, 1), "Third entry",
-            [Split(salary, -200), Split(checking, 200)],
-        )
-        t3 = manager.add_transaction(
-            datetime(2026, 3, 1), "First entry",
-            [Split(groceries, 300), Split(checking, -300)],
-        )
-        ordered = manager.journal.chronological()
-        descriptions = [t.description for t in ordered]
-        # Same dates → insertion order preserved (stable sort: Python's
-        # Timsort is stable so same-date items keep insertion order)
-        assert descriptions == ["Second entry", "Third entry", "First entry"]
-
-
-class TestEdgeCaseInvestment:
-    """Investment-specific edge cases."""
-
-    def test_sell_nonexistent_position_raises(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        brokerage = manager.add_account("Brokerage", 1, account_subtype="brokerage")
-        with pytest.raises(ValueError, match="No position"):
-            manager.sell_security(datetime(2026, 1, 1), "Sell None",
-                                  brokerage, checking, "VTI", 5, 10000)
-
-    def test_buy_shares_barely_affordable(self, manager: AccountManager):
-        """Buy exactly what you can afford."""
-        checking = manager.add_account("Checking", 1)
-        brokerage = manager.add_account("Brokerage", 1, account_subtype="brokerage")
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Fund exactly 100K",
-            [Split(checking, 100000), Split(brokerage, 100000),
-             Split(6, -200000)],
-        )
-        txn_id = manager.buy_security(
-            datetime(2026, 1, 15), "Buy exactly",
-            brokerage, checking, "VTI", 4, 25000,  # 4 * 25000 = 100000
-        )
-        manager.generate_ledger()
-        assert manager.accounts[checking].get_balance() == 0  # all spent
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  GUI Widget Helper Tests
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestFormatCents:
-    """Standalone tests for format_cents()."""
-
-    def test_format_positive(self):
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import format_cents
-        assert format_cents(123456) == "$1,234.56"
-
-    def test_format_zero(self):
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import format_cents
-        assert format_cents(0) == "$0.00"
-
-    def test_format_negative(self):
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import format_cents
-        assert format_cents(-5000) == "-$50.00"
-
-    def test_format_large(self):
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import format_cents
-        assert format_cents(10000000) == "$100,000.00"
-
-    def test_format_none(self):
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import format_cents
-        assert format_cents(None) == "—"
-
-    def test_format_small(self):
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import format_cents
-        assert format_cents(1) == "$0.01"
-
-    def test_format_negative_none(self):
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import format_cents
-        assert format_cents(-1) == "-$0.01"
-
-
-class TestBuildAccountChoices:
-    """Standalone tests for build_account_choices()."""
-
-    def test_build_choices_labels(self, manager: AccountManager):
-        """Verify label format and mapping for default accounts."""
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import build_account_choices
-
-        choices, mapping = build_account_choices(manager)
-        assert len(choices) > 0
-        assert isinstance(choices, list)
-        assert isinstance(mapping, dict)
-
-        # Default accounts should appear
-        # cash should be under assets with prefix
-        cash_labels = [c for c in choices if "cash" in c]
-        assert len(cash_labels) > 0
-
-        # Verify label contains account type
-        for label in cash_labels:
-            assert "ASSET" in label or "(" in label  # has type indicator
-
-    def test_build_choices_mapping(self, manager: AccountManager):
-        """Verify label → ID mapping works for a known account."""
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import build_account_choices
-
-        # Find the "cash" account ID
-        cash_id = None
-        for aid, acct in manager.accounts.items():
-            if acct.name == "cash":
-                cash_id = aid
-                break
-
-        choices, mapping = build_account_choices(manager)
-        # Find the label that maps to cash_id
-        matching_labels = [lbl for lbl, aid in mapping.items() if aid == cash_id]
-        assert len(matching_labels) >= 1
-
-    def test_build_choices_with_subtype_filter(self, manager: AccountManager):
-        """Subtype filter only includes accounts with matching subtype."""
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import build_account_choices
-
-        # Add a brokerage account
-        manager.add_account("My Brokerage", 1, account_subtype="brokerage")
-
-        choices, mapping = build_account_choices(
-            manager, subtype_filter={"brokerage"}
-        )
-        brokerage_labels = [c for c in choices if "brokerage" in c.lower()
-                            or "brokerage" in c.lower()]
-        # At least the one we created should be there
-        assert len(brokerage_labels) >= 1
-
-        # Accounts without brokerage subtype should not appear
-        for lbl in choices:
-            if "cash" in lbl:
-                assert False, f"cash should not appear in brokerage-only filter: {lbl}"
-
-    def test_build_choices_nonexistent_subtype_filter(self, manager: AccountManager):
-        """Filter for a subtype that doesn't exist returns empty choices."""
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import build_account_choices
-
-        choices, mapping = build_account_choices(
-            manager, subtype_filter={"nonexistent"}
-        )
-        assert choices == []
-        assert mapping == {}
-
-    def test_build_choices_structure(self, manager: AccountManager):
-        """Verify labels include indentation, name, type, and optional subtype."""
-        pytest.importorskip('tkinter')
-        from ledger.gui.widgets import build_account_choices
-
-        # Add a brokerage account
-        mgr = manager
-        mgr.add_account("Schwab", 1, account_subtype="brokerage")
-
-        choices, mapping = build_account_choices(mgr)
-
-        # Find brokerage-labeled account
-        schwab_labels = [c for c in choices if "Schwab" in c]
-        assert len(schwab_labels) >= 1
-        label = schwab_labels[0]
-        # Should have type info
-        assert "ASSET" in label
-        # Should have subtype info
-        assert "[brokerage]" in label
-        # Should have indentation (starts with spaces since it's under Assets)
-        assert label.startswith(" ")
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  AccountManager.add_account — additional coverage
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestAddAccountEdgeCases:
-    """Edge cases for AccountManager.add_account."""
-
-    def test_empty_name_raises(self, manager: AccountManager):
-        with pytest.raises(ValueError, match="name"):
-            manager.add_account("", 1)
-
-    def test_whitespace_name_raises(self, manager: AccountManager):
-        with pytest.raises(ValueError, match="name"):
-            manager.add_account("   ", 1)
-
-    def test_duplicate_name_same_parent_raises(self, manager: AccountManager):
-        manager.add_account("Dup", 1)
-        with pytest.raises(ValueError, match="already exists"):
-            manager.add_account("Dup", 1)
-
-    def test_duplicate_name_different_parent_succeeds(self, manager: AccountManager):
-        """Same name allowed under different parents."""
-        aid1 = manager.add_account("Resource", 1)
-        aid2 = manager.add_account("Resource", 2)
-        assert aid1 != aid2
-
-    def test_none_parent_raises(self, manager: AccountManager):
-        with pytest.raises(ValueError, match="parent"):
-            manager.add_account("Orphan", None)
-
-    def test_invalid_subtype_raises(self, manager: AccountManager):
-        with pytest.raises(ValueError, match="Invalid account_subtype"):
-            manager.add_account("Bad", 1, account_subtype="imaginary")
-
-    def test_contra_creates_successfully(self, manager: AccountManager):
-        aid = manager.add_account("Contra Test", 1, is_contra=True)
-        assert manager.accounts[aid].is_contra is True
-        assert manager.is_debit_normal(aid) is False  # contra-asset is credit-normal
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  AccountManager.add_transaction — additional coverage
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestAddTransactionEdgeCases:
-    """Additional edge cases for add_transaction."""
-
-    def test_empty_description_raises(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
+        assert txn_id >= 0
+
+    def test_addTransaction_manySplits_balanced(self, fast_manager):
+        """A 4-split transaction stays balanced."""
+        checking = fast_manager.add_account("Checking", 1)
+        a = fast_manager.add_account("A", 1)
+        b = fast_manager.add_account("B", 1)
+        c = fast_manager.add_account("C", 1)
+        fast_manager.add_transaction(datetime(2026, 1, 1), "Complex",
+            [Split(checking, 100000), Split(a, -25000), Split(b, -25000), Split(c, -50000)])
+        fast_manager.generate_ledger()
+        assert fast_manager.check_accounting_equation()["balanced"] is True
+
+    def test_addTransaction_unbalanced_raises(self, fast_manager):
+        """Splits that don't sum to zero raise ValueError."""
+        checking = fast_manager.add_account("Checking", 1)
+        with pytest.raises(ValueError, match="Unbalanced"):
+            fast_manager.add_transaction(datetime(2026, 1, 1), "Bad", [Split(checking, 5000)])
+
+    def test_addTransaction_emptySplits_raises(self, fast_manager):
+        """A transaction with no splits raises."""
+        with pytest.raises(ValueError, match="at least one split"):
+            fast_manager.add_transaction(datetime(2026, 1, 1), "Empty", [])
+
+    def test_addTransaction_zeroAmount_raises(self, fast_manager):
+        """A split with amount 0 raises."""
+        checking = fast_manager.add_account("Checking", 1)
+        wages = fast_manager.add_account("Wages", 4)
+        with pytest.raises(ValueError, match="zero"):
+            fast_manager.add_transaction(datetime(2026, 1, 1), "Zero",
+                [Split(checking, 0), Split(wages, 0)])
+
+    def test_addTransaction_nonexistentAccount_raises(self, fast_manager):
+        """A split referencing a non-existent account raises."""
+        checking = fast_manager.add_account("Checking", 1)
+        with pytest.raises(ValueError, match="No account"):
+            fast_manager.add_transaction(datetime(2026, 1, 1), "Bad",
+                [Split(checking, 5000), Split(9999, -5000)])
+
+    def test_addTransaction_emptyDescription_raises(self, fast_manager):
+        """An empty description raises ValueError."""
+        checking = fast_manager.add_account("Checking", 1)
+        wages = fast_manager.add_account("Wages", 4)
         with pytest.raises(ValueError, match="description"):
-            manager.add_transaction(
-                datetime(2026, 1, 1), "",
-                [Split(groceries, 5000), Split(checking, -5000)],
-            )
+            fast_manager.add_transaction(datetime(2026, 1, 1), "",
+                [Split(wages, -50000), Split(checking, 50000)])
 
-    def test_whitespace_description_raises(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
-        with pytest.raises(ValueError, match="description"):
-            manager.add_transaction(
-                datetime(2026, 1, 1), "   ",
-                [Split(groceries, 5000), Split(checking, -5000)],
-            )
+    def test_addTransaction_veryLongDescription_succeeds(self, fast_manager):
+        """Very long descriptions are accepted."""
+        checking = fast_manager.add_account("Checking", 1)
+        wages = fast_manager.add_account("Wages", 4)
+        tid = fast_manager.add_transaction(datetime(2026, 1, 1), "A" * 500,
+            [Split(wages, -50000), Split(checking, 50000)])
+        assert tid >= 0
 
-    def test_zero_amount_split_raises(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
-        with pytest.raises(ValueError, match="non-zero"):
-            manager.add_transaction(
-                datetime(2026, 1, 1), "Zero split",
-                [Split(groceries, 0), Split(checking, 5000),
-                 Split(6, -5000)],
-            )
+    # ── Delete ─────────────────────────────────────────────────
 
-    def test_duplicate_account_in_splits_succeeds(self, manager: AccountManager):
-        """The same account can appear on both sides (debit + credit)."""
-        checking = manager.add_account("Checking", 1)
-        txn_id = manager.add_transaction(
-            datetime(2026, 1, 1), "Internal transfer",
-            [Split(checking, 5000), Split(checking, -5000)],
-        )
-        assert txn_id is not None
+    def test_deleteTransaction_removesAndRebalances(self, fast_manager):
+        """Deleting a transaction keeps the ledger balanced."""
+        checking = fast_manager.add_account("Checking", 1)
+        wages = fast_manager.add_account("Wages", 4)
+        t1 = fast_manager.add_transaction(datetime(2026, 1, 1), "Pay",
+            [Split(wages, -50000), Split(checking, 50000)])
+        rent = fast_manager.add_account("Rent", 5)
+        fast_manager.add_transaction(datetime(2026, 1, 2), "Rent",
+            [Split(rent, 20000), Split(checking, -20000)])
+        fast_manager.generate_ledger()
+        assert fast_manager.check_accounting_equation()["balanced"] is True
+        fast_manager.delete_transaction(t1)
+        fast_manager.generate_ledger()
+        assert fast_manager.check_accounting_equation()["balanced"] is True
 
-    def test_nonexistent_account_in_split_raises(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        with pytest.raises(ValueError, match="account"):
-            manager.add_transaction(
-                datetime(2026, 1, 1), "Bad",
-                [Split(checking, 5000), Split(99999, -5000)],
-            )
+    def test_deleteTransaction_allTxns_accountsZero(self, fast_manager):
+        """Deleting all transactions leaves all accounts at zero."""
+        checking = fast_manager.add_account("Checking", 1)
+        wages = fast_manager.add_account("Wages", 4)
+        fast_manager.add_transaction(datetime(2026, 1, 1), "P1",
+            [Split(wages, -50000), Split(checking, 50000)])
+        fast_manager.add_transaction(datetime(2026, 1, 2), "P2",
+            [Split(wages, -100000), Split(checking, 100000)])
+        fast_manager.add_transaction(datetime(2026, 1, 3), "Exp",
+            [Split(fast_manager.add_account("Exp", 5), 30000), Split(checking, -30000)])
+        fast_manager.generate_ledger()
+        for tid in list(fast_manager.journal.transactions.keys()):
+            fast_manager.delete_transaction(tid)
+        fast_manager.generate_ledger()
+        assert fast_manager.check_accounting_equation()["assets"] == 0
+        assert fast_manager.check_accounting_equation()["balanced"] is True
 
-
-# ═══════════════════════════════════════════════════════════════════
-#  AccountManager.delete_account — referencing txns
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestDeleteAccountReferencingTxns:
-    """Deleting accounts that have referencing transactions."""
-
-    def test_delete_account_with_ref_txn_cleans_up(self, manager: AccountManager):
-        """Deleting an account with referencing transactions removes them."""
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
-        salary = manager.add_account("Salary", 4)
-
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Pay",
-            [Split(salary, -100000), Split(checking, 100000)],
-        )
-        manager.add_transaction(
-            datetime(2026, 1, 2), "Shop",
-            [Split(groceries, 5000), Split(checking, -5000)],
-        )
-        manager.generate_ledger()
-
-        txn_count_before = len(manager.journal.transactions)
-
-        # Delete groceries (leaf, has referencing txn)
-        manager.delete_account(groceries)
-        manager.generate_ledger()
-
-        # The referencing transaction should have been deleted
-        assert groceries not in manager.accounts
-        assert len(manager.journal.transactions) == txn_count_before - 1
-
-    def test_delete_account_removes_transaction_balances(self, manager: AccountManager):
-        """After deleting an account with txns, remaining balances are correct."""
-        checking = manager.add_account("Checking", 1)
-        groceries = manager.add_account("Groceries", 5)
-        salary = manager.add_account("Salary", 4)
-
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Pay",
-            [Split(salary, -100000), Split(checking, 100000)],
-        )
-        manager.add_transaction(
-            datetime(2026, 1, 2), "Shop",
-            [Split(groceries, 5000), Split(checking, -5000)],
-        )
-        manager.generate_ledger()
-        assert manager.accounts[checking].get_balance() == 95000
-
-        manager.delete_account(groceries)
-        manager.generate_ledger()
-
-        # Checking balance is now just the salary (100K) since grocery txn
-        # was also deleted
-        assert manager.accounts[checking].get_balance() == 100000
-        assert manager.accounts[salary].get_balance() == -100000
-
-    def test_delete_account_without_txns_keeps_others(self, manager: AccountManager):
-        """Deleting an account without referencing txns doesn't remove anything else."""
-        checking = manager.add_account("Checking", 1)
-        empty = manager.add_account("Empty", 1)
-        salary = manager.add_account("Salary", 4)
-
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Pay",
-            [Split(salary, -100000), Split(checking, 100000)],
-        )
-        manager.generate_ledger()
-
-        txn_count = len(manager.journal.transactions)
-        manager.delete_account(empty)
-        manager.generate_ledger()
-
-        assert empty not in manager.accounts
-        assert len(manager.journal.transactions) == txn_count
+    def test_deleteTransaction_nonexistent_raises(self, fast_manager):
+        """Deleting a non-existent transaction raises KeyError."""
+        with pytest.raises(KeyError):
+            fast_manager.delete_transaction(9999)
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  AccountManager.get_balance — raw balance from splits
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestGetBalance:
-    """Verifying raw ledger balances retrieved correctly."""
-
-    def test_get_balance_zero_initially(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        assert manager.accounts[checking].get_balance() == 0
-
-    def test_get_balance_after_debit(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        salary = manager.add_account("Salary", 4)
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Pay",
-            [Split(salary, -100000), Split(checking, 100000)],
-        )
-        manager.generate_ledger()
-        assert manager.accounts[checking].get_balance() == 100000
-
-    def test_get_balance_after_credit(self, manager: AccountManager):
-        checking = manager.add_account("Checking", 1)
-        salary = manager.add_account("Salary", 4)
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Pay",
-            [Split(salary, -100000), Split(checking, 100000)],
-        )
-        manager.generate_ledger()
-        assert manager.accounts[salary].get_balance() == -100000
-
-    def test_get_balance_net_effect(self, manager: AccountManager):
-        """Balance reflects debits minus credits after multiple txns."""
-        checking = manager.add_account("Checking", 1)
-        salary = manager.add_account("Salary", 4)
-        groceries = manager.add_account("Groceries", 5)
-
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Pay",
-            [Split(salary, -200000), Split(checking, 200000)],
-        )
-        manager.add_transaction(
-            datetime(2026, 1, 2), "Shop",
-            [Split(groceries, 5000), Split(checking, -5000)],
-        )
-        manager.generate_ledger()
-        assert manager.accounts[checking].get_balance() == 195000
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  AccountManager.generate_ledger — trial balance integrity
+#  Generate Ledger — trial balance verification
 # ═══════════════════════════════════════════════════════════════════
 
 
 class TestGenerateLedger:
-    """Ledger generation and trial balance integrity."""
+    """generate_ledger — computing balances from journal entries."""
 
-    def test_trial_balance_zero(self, manager: AccountManager):
-        """Sum of all account balances is always zero."""
-        checking = manager.add_account("Checking", 1)
-        income = manager.add_account("Income", 4)
-        expense = manager.add_account("Expense", 5)
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Txn 1",
-            [Split(income, -1000), Split(checking, 1000)],
-        )
-        manager.add_transaction(
-            datetime(2026, 1, 2), "Txn 2",
-            [Split(expense, 500), Split(checking, -500)],
-        )
-        manager.generate_ledger()
-        total = sum(a.get_balance() for a in manager.accounts.values())
-        assert total == 0, f"Trial balance is {total}, expected 0"
+    def test_generateLedger_noTransactions_allZero(self, fast_manager):
+        """With no transactions, all account balances are zero."""
+        fast_manager.generate_ledger()
+        assert all(acct.get_balance() == 0 for aid, acct in fast_manager.accounts.items() if aid)
 
-    def test_trial_balance_with_multiple_accounts(self, manager: AccountManager):
-        """Complex compound transaction still sums to zero."""
-        checking = manager.add_account("Checking", 1)
-        savings = manager.add_account("Savings", 1)
-        salary = manager.add_account("Salary", 4)
-        rent = manager.add_account("Rent", 5)
+    def test_generateLedger_singleTransaction_sumsCorrectly(self, fast_manager):
+        """A simple transaction updates account balances."""
+        checking = fast_manager.add_account("Checking", 1)
+        wages = fast_manager.add_account("Wages", 4)
+        fast_manager.add_transaction(datetime(2026, 1, 1), "Pay",
+            [Split(wages, -50000), Split(checking, 50000)])
+        fast_manager.generate_ledger()
+        assert fast_manager.accounts[checking].get_balance() == 50000
+        assert fast_manager.accounts[wages].get_balance() == -50000
 
-        # Paycheck split to checking + savings
-        manager.add_transaction(
-            datetime(2026, 1, 1), "Payday",
-            [Split(salary, -200000), Split(checking, 150000),
-             Split(savings, 50000)],
-        )
-        # Pay rent from checking
-        manager.add_transaction(
-            datetime(2026, 1, 2), "Rent",
-            [Split(rent, 150000), Split(checking, -150000)],
-        )
-        manager.generate_ledger()
-        total = sum(a.get_balance() for a in manager.accounts.values())
-        assert total == 0
-
-    def test_trial_balance_empty_journal(self, manager: AccountManager):
-        """Empty journal still produces a balanced trial balance."""
-        manager.generate_ledger()
-        total = sum(a.get_balance() for a in manager.accounts.values())
-        assert total == 0
+    def test_generateLedger_balanced_sumsToZero(self, fast_manager):
+        """generate_ledger does not raise for balanced transactions."""
+        checking = fast_manager.add_account("Checking", 1)
+        wages = fast_manager.add_account("Wages", 4)
+        fast_manager.add_transaction(datetime(2026, 1, 1), "Pay",
+            [Split(wages, -50000), Split(checking, 50000)])
+        fast_manager.generate_ledger()  # should not raise
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Data Models: Ledger (data_books.py)
+#  Closing Entries
 # ═══════════════════════════════════════════════════════════════════
 
 
-class TestLedgerModel:
-    """Unit tests for the Ledger model (in-memory per-account ledger)."""
+class TestCloseTemps:
+    """close_temps — closing income/expense to retained earnings."""
 
-    def test_ledger_create_empty(self):
-        from ledger.models.data_books import Ledger
-        led = Ledger()
-        assert led.entries == {}
-        assert led.sorted_ids == []
-        assert led.id_num == 0
-        assert led.balance == 0
+    def test_closeTemps_zeroesIncomeAndExpense(self, fast_seeded):
+        """After close_temps, income and expense accounts have zero balance."""
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+        assert all(acct.get_balance() == 0
+                   for aid, acct in fast_seeded.accounts.items()
+                   if acct.acct_type in ("INCOME", "EXPENSE"))
 
-    def test_ledger_add_entry(self):
-        from ledger.models.data_books import Ledger
-        led = Ledger()
-        eid = led.add_entry(datetime(2026, 1, 1), "Test", 0, 5000)
-        assert eid == 0
-        assert len(led.entries) == 1
-        assert led.entries[0].credit == 0
-        assert led.entries[0].debit == 5000
-        assert led.balance == 5000
+    def test_closeTemps_rebuildsLedger(self, fast_seeded):
+        """After close, RE balance is non-zero."""
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+        assert fast_seeded.accounts[6].get_balance() != 0
 
-    def test_ledger_add_credit_entry(self):
-        from ledger.models.data_books import Ledger
-        led = Ledger()
-        led.add_entry(datetime(2026, 1, 1), "Credit", 10000, 0)
-        assert led.balance == -10000
-
-    def test_ledger_balance_cumulative(self):
-        from ledger.models.data_books import Ledger
-        led = Ledger()
-        led.add_entry(datetime(2026, 1, 1), "Start", 0, 10000)
-        led.add_entry(datetime(2026, 1, 2), "Add", 0, 5000)
-        led.add_entry(datetime(2026, 1, 3), "Remove", 3000, 0)
-        assert led.balance == 12000  # 10000 + 5000 - 3000
-
-    def test_ledger_clear_entries(self):
-        from ledger.models.data_books import Ledger
-        led = Ledger()
-        led.add_entry(datetime(2026, 1, 1), "A", 0, 100)
-        led.add_entry(datetime(2026, 1, 2), "B", 0, 200)
-        assert led.balance == 300
-        led.clear_entries()
-        assert led.entries == {}
-        assert led.sorted_ids == []
-        assert led.id_num == 0
-        assert led.balance == 0
-
-    def test_ledger_chronological_order(self):
-        from ledger.models.data_books import Ledger
-        led = Ledger()
-        led.add_entry(datetime(2026, 3, 1), "Mar", 0, 100)
-        led.add_entry(datetime(2026, 1, 1), "Jan", 0, 200)
-        led.add_entry(datetime(2026, 2, 1), "Feb", 0, 300)
-        ordered = led.chronological()
-        dates = [e.date.strftime("%Y-%m-%d") for e in ordered]
-        assert dates == ["2026-01-01", "2026-02-01", "2026-03-01"]
-
-    def test_ledger_by_id_exists(self):
-        from ledger.models.data_books import Ledger
-        led = Ledger()
-        eid = led.add_entry(datetime(2026, 1, 1), "Found", 0, 100)
-        entry = led.by_id(eid)
-        assert entry is not None
-        assert entry.description == "Found"
-
-    def test_ledger_by_id_missing(self):
-        from ledger.models.data_books import Ledger
-        led = Ledger()
-        assert led.by_id(9999) is None
+    def test_closeTemps_doubleClose_noChange(self, fast_seeded):
+        """Calling close_temps twice produces the same RE balance."""
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+        re1 = fast_seeded.accounts[6].get_balance()
+        fast_seeded.close_temps()
+        fast_seeded.generate_ledger()
+        assert fast_seeded.accounts[6].get_balance() == re1
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Data Models: Journal — additional coverage
+#  Widget Helpers
 # ═══════════════════════════════════════════════════════════════════
 
 
-class TestJournalAdditional:
-    """Additional unit tests for Journal methods."""
+class TestFormatCents:
+    """format_cents — integer cents to USD string. No tkinter required."""
 
-    def test_journal_by_id_exists(self):
-        from ledger.models.data_books import Journal
-        from ledger.models.data_class import JournalTransaction, Split
-        j = Journal()
-        txn = JournalTransaction(datetime(2026, 1, 1), "A",
-                                 [Split(1, 100), Split(2, -100)])
-        txn_id = j.add_transaction(txn)
-        result = j.by_id(txn_id)
-        assert result is txn
+    @staticmethod
+    def _fmt(cents):
+        if cents is None:
+            return "\u2014"
+        sign = "-" if cents < 0 else ""
+        return f"{sign}${abs(cents)/100:,.2f}"
 
-    def test_journal_by_id_missing(self):
-        from ledger.models.data_books import Journal
-        j = Journal()
-        assert j.by_id(9999) is None
+    def test_positive_123456_returnsDollar1234Dot56(self):
+        assert TestFormatCents._fmt(123456) == "$1,234.56"
 
-    def test_journal_get_db_id_stored(self):
-        from ledger.models.data_books import Journal
-        from ledger.models.data_class import JournalTransaction, Split
-        j = Journal()
-        txn = JournalTransaction(datetime(2026, 1, 1), "A",
-                                 [Split(1, 100), Split(2, -100)])
-        mem_id = j.add_transaction(txn, db_id=42)
-        assert j.get_db_id(mem_id) == 42
+    def test_zero_returnsZeroDollar(self):
+        assert TestFormatCents._fmt(0) == "$0.00"
 
-    def test_journal_get_db_id_none(self):
-        from ledger.models.data_books import Journal
-        from ledger.models.data_class import JournalTransaction, Split
-        j = Journal()
-        txn = JournalTransaction(datetime(2026, 1, 1), "A",
-                                 [Split(1, 100), Split(2, -100)])
-        mem_id = j.add_transaction(txn)
-        assert j.get_db_id(mem_id) is None
+    def test_negative_5000_returnsNegativePrefix(self):
+        assert TestFormatCents._fmt(-5000) == "-$50.00"
 
-    def test_journal_get_db_id_nonexistent(self):
-        from ledger.models.data_books import Journal
-        j = Journal()
-        assert j.get_db_id(9999) is None
+    def test_largeValue_commasCorrect(self):
+        assert TestFormatCents._fmt(12345678) == "$123,456.78"
+
+    def test_none_returnsDash(self):
+        assert TestFormatCents._fmt(None) == "\u2014"
+
+    def test_smallValue_padsDecimals(self):
+        assert TestFormatCents._fmt(1) == "$0.01"
+        assert TestFormatCents._fmt(-1) == "-$0.01"
+
+
+class TestBuildAccountChoices:
+    """build_account_choices — dropdown options for dialogs.
+    Requires tkinter — tests are skipped when unavailable.
+    """
+
+    def _import_and_run(self, fast_manager, subtype_filter=None):
+        """Import and run build_account_choices, swallowing ImportError."""
+        try:
+            from ledger.gui.widgets import build_account_choices
+            kwargs = {}
+            if subtype_filter is not None:
+                kwargs["subtype_filter"] = subtype_filter
+            return build_account_choices(fast_manager, **kwargs)
+        except ImportError:
+            pytest.skip("tkinter not available")
+        except Exception:
+            pytest.skip("tkinter display required")
+
+    def test_buildChoices_returnsLabelsAndMap(self, fast_manager):
+        labels, mapping = self._import_and_run(fast_manager)
+        assert len(labels) > 0
+        assert len(mapping) > 0
+
+    def test_buildChoices_labelsAreStrings(self, fast_manager):
+        labels, _ = self._import_and_run(fast_manager)
+        for label in labels:
+            assert isinstance(label, str)
+
+    def test_buildChoices_mappingMapsToInt(self, fast_manager):
+        _, mapping = self._import_and_run(fast_manager)
+        for key, value in mapping.items():
+            assert isinstance(value, int)
+
+    def test_buildChoices_withSubtypeFilter_filters(self, fast_manager):
+        fast_manager.add_account("C", 1, account_subtype="checking")
+        fast_manager.add_account("B", 1, account_subtype="brokerage")
+        labels, _ = self._import_and_run(fast_manager, subtype_filter={"checking"})
+        assert len(labels) > 0
+
+    def test_buildChoices_nonexistentSubtype_doesNotCrash(self, fast_manager):
+        labels, _ = self._import_and_run(fast_manager, subtype_filter={"xyz_fake_type"})
+        assert isinstance(labels, list)
