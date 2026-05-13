@@ -23,7 +23,7 @@ from ledger.controllers.accounts import AccountManager
 from ledger.models.data_class import Split
 from ledger.scripts.qif_to_csv import parse_qif, _parse_prices, _normalize_date
 
-DEFAULT_DB = os.path.join(os.path.dirname(__file__), "..", "..", "data", "journal.db")
+DEFAULT_DB = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "journal.db")
 
 
 def import_529(qif_path: str, db_path: str = DEFAULT_DB,
