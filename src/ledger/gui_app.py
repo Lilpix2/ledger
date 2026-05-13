@@ -197,6 +197,7 @@ class LedgerGUI(tk.Tk):
         self.transaction_table.column("amount", width=100, anchor=tk.E, minwidth=70)
 
         self.transaction_table.pack(fill=tk.BOTH, expand=True)
+        self.transaction_table.bind("<Double-1>", self._on_transaction_double_click)
 
         paned.add(right_frame, weight=2)
 
@@ -464,6 +465,63 @@ class LedgerGUI(tk.Tk):
         )
 
     # ══════════════════════════════════════════════════════════════
+    #  HELPERS
+    # ══════════════════════════════════════════════════════════════
+
+    def _build_account_choices(
+        self, subtype_filter: set[str] | None = None
+    ) -> tuple[list[str], dict[str, int]]:
+        """Build a list of account labels and a label→ID mapping.
+
+        Args:
+            subtype_filter: if set, only include accounts with one of
+                            these subtypes (e.g. ``{"brokerage", "mesp"}``)
+
+        Returns:
+            (choices_list, label_to_id_dict)
+        """
+        choices: list[str] = []
+        mapping: dict[str, int] = {}
+        tree_data = self.manager.build_tree()
+
+        def _walk(parent_id: int, depth: int = 0):
+            for cid in sorted(tree_data.get(parent_id, [])):
+                acct = self.manager.accounts.get(cid)
+                if not acct:
+                    continue
+
+                # Apply subtype filter
+                if subtype_filter is not None:
+                    if acct.account_subtype not in subtype_filter:
+                        _walk(cid, depth + 1)
+                        continue
+
+                prefix = "  " * depth
+                label = f"{prefix}{cid:3d}: {acct.name} ({acct.acct_type})"
+                if acct.account_subtype:
+                    label += f" [{acct.account_subtype}]"
+                choices.append(label)
+                mapping[label.strip()] = cid
+                # Also map just the full ID part for easy lookup
+                mapping[str(cid)] = cid
+                _walk(cid, depth + 1)
+
+        _walk(0)
+        return choices, mapping
+
+    def _parse_acct_id(self, raw: str) -> int | None:
+        """Extract an account ID from a combobox label string or raw ID."""
+        if not raw:
+            return None
+        if raw.strip().isdigit():
+            return int(raw)
+        try:
+            return int(raw.split(":")[0].strip())
+        except (ValueError, IndexError):
+            pass
+        return None
+
+    # ══════════════════════════════════════════════════════════════
     #  EVENTS
     # ══════════════════════════════════════════════════════════════
 
@@ -475,6 +533,47 @@ class LedgerGUI(tk.Tk):
                 self._refresh_table(filter_account_id=acct_id)
             except ValueError:
                 pass
+
+    def _on_transaction_double_click(self, event=None):
+        """Double-click a journal entry to view its splits."""
+        selected = self.transaction_table.selection()
+        if not selected:
+            return
+        try:
+            txn_id = int(selected[0])
+        except ValueError:
+            return
+
+        txn = self.manager.journal.transactions.get(txn_id)
+        if not txn:
+            return
+
+        # Build the detail display
+        lines = [
+            f"Transaction #{txn_id}",
+            f"Date: {txn.date.strftime(DATE_STR)}",
+            f"Description: {txn.description}",
+            "",
+            "Splits:",
+        ]
+        for s in txn.splits:
+            acct = self.manager.accounts.get(s.account_id)
+            acct_name = acct.name if acct else f"ID {s.account_id}"
+            direction = "Dr" if s.amount > 0 else "Cr"
+            lines.append(
+                f"  {direction}  {acct_name:30s}  "
+                f"{_fmt(abs(s.amount)):>12s}"
+            )
+            if s.memo:
+                lines.append(f"  {'':3s}  {'':30s}  {s.memo}")
+
+        lines.append("")
+        lines.append(f"Total: {_fmt(txn.total())}")
+
+        messagebox.showinfo(
+            f"Transaction #{txn_id}",
+            "\n".join(lines),
+        )
 
     def _on_close(self):
         self.manager.db = None  # release DB
@@ -667,31 +766,16 @@ class LedgerGUI(tk.Tk):
         add_frame = ttk.LabelFrame(frame, text="Add Split", padding=6)
         add_frame.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=6)
 
-        # ── Account dropdown (replaces text entry) ────────────────
+        # ── Account dropdown ─────────────────────────────────────
         ttk.Label(add_frame, text="Account:").grid(row=0, column=0, padx=2)
         split_acct_var = tk.StringVar()
+        split_acct_choices, _ = self._build_account_choices()
         split_acct_combo = ttk.Combobox(
             add_frame, textvariable=split_acct_var,
+            values=split_acct_choices,
             width=42, state="normal",
         )
         split_acct_combo.grid(row=0, column=1, padx=2, columnspan=2)
-
-        # Populate with all accounts (sorted, flattened tree order)
-        acct_choices: list[str] = []
-        tree_data = self.manager.build_tree()
-        def _walk(parent_id: int, depth: int = 0):
-            for cid in sorted(tree_data.get(parent_id, [])):
-                acct = self.manager.accounts.get(cid)
-                if not acct:
-                    continue
-                prefix = "  " * depth
-                label = f"{prefix}{cid:3d}: {acct.name} ({acct.acct_type})"
-                if acct.account_subtype:
-                    label += f" [{acct.account_subtype}]"
-                acct_choices.append(label)
-                _walk(cid, depth + 1)
-        _walk(0)
-        split_acct_combo["values"] = acct_choices
 
         ttk.Label(add_frame, text="Amount:").grid(row=0, column=3, padx=2)
         split_amt_var = tk.StringVar()
@@ -810,86 +894,106 @@ class LedgerGUI(tk.Tk):
         """Modal dialog for buy/sell security transactions."""
         dialog = tk.Toplevel(self)
         dialog.title("Buy / Sell Security")
-        dialog.geometry("450x350")
+        dialog.geometry("520x420")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.grab_set()
 
         frame = ttk.Frame(dialog, padding=12)
         frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(1, weight=1)
 
-        # Direction
+        # ── Direction ─────────────────────────────────────────────────
         ttk.Label(frame, text="Direction:").grid(row=0, column=0, sticky=tk.W, pady=2)
         dir_var = tk.StringVar(value="buy")
         ttk.Radiobutton(frame, text="Buy", variable=dir_var, value="buy").grid(row=0, column=1, sticky=tk.W)
         ttk.Radiobutton(frame, text="Sell", variable=dir_var, value="sell").grid(row=0, column=2, sticky=tk.W)
 
-        # Investment account
-        ttk.Label(frame, text="Investment Account ID:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        # ── Investment account ────────────────────────────────────────
+        ttk.Label(frame, text="Investment Account:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        inv_choices, _ = self._build_account_choices(
+            subtype_filter={"brokerage", "mesp", "retirement"}
+        )
         inv_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=inv_var, width=10).grid(row=1, column=1, sticky=tk.W)
-        ttk.Label(frame, text="(brokerage/mesp/retirement)", foreground="gray").grid(row=1, column=2, sticky=tk.W)
+        inv_combo = ttk.Combobox(
+            frame, textvariable=inv_var,
+            values=inv_choices, width=50, state="normal",
+        )
+        inv_combo.grid(row=1, column=1, sticky=tk.EW, padx=4, pady=2, columnspan=2)
 
-        # Cash account
-        ttk.Label(frame, text="Cash Account ID:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        # ── Cash account ─────────────────────────────────────────────
+        ttk.Label(frame, text="Cash Account:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        cash_choices, _ = self._build_account_choices()
         cash_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=cash_var, width=10).grid(row=2, column=1, sticky=tk.W)
+        cash_combo = ttk.Combobox(
+            frame, textvariable=cash_var,
+            values=cash_choices, width=50, state="normal",
+        )
+        cash_combo.grid(row=2, column=1, sticky=tk.EW, padx=4, pady=2, columnspan=2)
 
-        # Ticker
-        ttk.Label(frame, text="Ticker:").grid(row=3, column=0, sticky=tk.W, pady=2)
-        ticker_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=ticker_var, width=10).grid(row=3, column=1, sticky=tk.W)
-
-        # Shares
-        ttk.Label(frame, text="Shares:").grid(row=4, column=0, sticky=tk.W, pady=2)
-        shares_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=shares_var, width=10).grid(row=4, column=1, sticky=tk.W)
-
-        # Price
-        ttk.Label(frame, text="Price per share (cents):").grid(row=5, column=0, sticky=tk.W, pady=2)
-        price_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=price_var, width=10).grid(row=5, column=1, sticky=tk.W)
-
-        # Date
-        ttk.Label(frame, text="Date:").grid(row=6, column=0, sticky=tk.W, pady=2)
-        date_var = tk.StringVar(value=datetime.now().strftime(DATE_STR))
-        ttk.Entry(frame, textvariable=date_var, width=25).grid(row=6, column=1, sticky=tk.W, columnspan=2)
-
-        # Description
-        ttk.Label(frame, text="Description:").grid(row=7, column=0, sticky=tk.W, pady=2)
-        desc_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=desc_var, width=40).grid(row=7, column=1, sticky=tk.EW, pady=2, columnspan=2)
-        frame.columnconfigure(1, weight=1)
-
-        # Gains account (shown for sells)
+        # ── Gains account (shown for sells) ───────────────────────────
         gains_frame = ttk.Frame(frame)
-        gains_frame.grid(row=8, column=0, columnspan=3, sticky=tk.W, pady=2)
-        gains_label = ttk.Label(gains_frame, text="Gains Account ID (optional):")
+        gains_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=2)
+        gains_label = ttk.Label(gains_frame, text="Gains Account (optional):")
         gains_var = tk.StringVar()
-        gains_entry = ttk.Entry(gains_frame, textvariable=gains_var, width=10)
+
+        gain_choices, _ = self._build_account_choices()
+        gains_combo = ttk.Combobox(
+            gains_frame, textvariable=gains_var,
+            values=gain_choices, width=50, state="normal",
+        )
 
         def toggle_gains(*args):
             if dir_var.get() == "sell":
                 gains_label.pack(side=tk.LEFT)
-                gains_entry.pack(side=tk.LEFT, padx=4)
+                gains_combo.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
             else:
                 gains_label.pack_forget()
-                gains_entry.pack_forget()
-
+                gains_combo.pack_forget()
         dir_var.trace("w", toggle_gains)
         toggle_gains()
 
-        # Buttons
+        # ── Ticker ───────────────────────────────────────────────────
+        ttk.Label(frame, text="Ticker:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        ticker_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=ticker_var, width=15).grid(row=4, column=1, sticky=tk.W, padx=4)
+
+        # ── Shares + Price row ───────────────────────────────────────
+        sp_frame = ttk.Frame(frame)
+        sp_frame.grid(row=5, column=0, columnspan=3, sticky=tk.EW, pady=2)
+        ttk.Label(sp_frame, text="Shares:").pack(side=tk.LEFT)
+        shares_var = tk.StringVar()
+        ttk.Entry(sp_frame, textvariable=shares_var, width=12).pack(side=tk.LEFT, padx=4)
+        ttk.Label(sp_frame, text="Price (cents):").pack(side=tk.LEFT, padx=(12, 2))
+        price_var = tk.StringVar()
+        ttk.Entry(sp_frame, textvariable=price_var, width=12).pack(side=tk.LEFT, padx=4)
+
+        # ── Date ─────────────────────────────────────────────────────
+        ttk.Label(frame, text="Date:").grid(row=6, column=0, sticky=tk.W, pady=2)
+        date_var = tk.StringVar(value=datetime.now().strftime(DATE_STR))
+        ttk.Entry(frame, textvariable=date_var, width=25).grid(row=6, column=1, sticky=tk.W, padx=4, columnspan=2)
+
+        # ── Description ──────────────────────────────────────────────
+        ttk.Label(frame, text="Description:").grid(row=7, column=0, sticky=tk.W, pady=2)
+        desc_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=desc_var, width=45).grid(
+            row=7, column=1, sticky=tk.EW, padx=4, pady=2, columnspan=2,
+        )
+
+        # ── Buttons ──────────────────────────────────────────────────
         btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=9, column=0, columnspan=3, pady=12)
+        btn_frame.grid(row=8, column=0, columnspan=3, pady=12)
 
         def submit():
             direction = dir_var.get()
-            try:
-                inv_id = int(inv_var.get())
-                cash_id = int(cash_var.get())
-            except ValueError:
-                messagebox.showerror("Error", "Account IDs must be numbers", parent=dialog)
+            inv_id = self._parse_acct_id(inv_var.get())
+            cash_id = self._parse_acct_id(cash_var.get())
+
+            if inv_id is None:
+                messagebox.showerror("Error", "Select an investment account", parent=dialog)
+                return
+            if cash_id is None:
+                messagebox.showerror("Error", "Select a cash account", parent=dialog)
                 return
 
             ticker = ticker_var.get().strip().upper()
@@ -922,7 +1026,7 @@ class LedgerGUI(tk.Tk):
                 return
 
             desc = desc_var.get().strip() or f"{direction.title()} {shares} × {ticker}"
-            gain_id = int(gains_var.get()) if gains_var.get().strip() else None
+            gain_id = self._parse_acct_id(gains_var.get())
 
             try:
                 if direction == "buy":
@@ -938,7 +1042,7 @@ class LedgerGUI(tk.Tk):
         ttk.Button(btn_frame, text="Submit", command=submit).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=4)
 
-        ttk.Entry(frame, textvariable=inv_var, width=10).focus()
+        inv_combo.focus()
         dialog.wait_window()
 
     # ══════════════════════════════════════════════════════════════
