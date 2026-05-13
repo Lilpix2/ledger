@@ -80,6 +80,7 @@ class AccountManager:
                     acct.holdings[holding.ticker] = holding
 
         self.account_num = max(self.accounts.keys()) + 1
+        self.generate_ledger()
 
     def _generate_parents(self):
         """Create the top-level parent accounts and default sub-accounts."""

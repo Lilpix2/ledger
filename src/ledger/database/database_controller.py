@@ -194,10 +194,20 @@ class DatabaseController:
             return [Price(r["ticker"], r["date"], r["price_cents"]) for r in rows]
 
     def save_price(self, price: Price) -> None:
-        """Insert or replace a price quote."""
+        """Insert or replace a single price quote."""
+        self.bulk_save_prices([(price.ticker, price.date, price.price_cents)])
+
+    def bulk_save_prices(
+        self, prices: list[tuple[str, str, int]],
+    ) -> None:
+        """Insert or replace many price quotes in a single transaction.
+
+        Args:
+            prices: List of (ticker, date_str, price_cents) tuples.
+        """
         with self._connect() as conn:
-            conn.execute(
+            conn.executemany(
                 "INSERT OR REPLACE INTO prices (ticker, date, price_cents) "
                 "VALUES (?, ?, ?)",
-                (price.ticker, price.date, price.price_cents),
+                prices,
             )
