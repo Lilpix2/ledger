@@ -153,7 +153,6 @@ class LedgerGUI(tk.Tk):
             displaycolumns=("balance",),
             yscrollcommand=acct_scroll_y.set,
             selectmode="browse",
-            height=20,
         )
         acct_scroll_y.config(command=self.account_tree.yview)
 
@@ -186,7 +185,6 @@ class LedgerGUI(tk.Tk):
             yscrollcommand=txn_scroll_y.set,
             xscrollcommand=txn_scroll_x.set,
             selectmode="browse",
-            height=20,
         )
         txn_scroll_y.config(command=self.transaction_table.yview)
         txn_scroll_x.config(command=self.transaction_table.xview)
@@ -637,7 +635,7 @@ class LedgerGUI(tk.Tk):
         frame.columnconfigure(1, weight=1)
 
         parent_var = tk.StringVar()
-        parent_combo = ttk.Combobox(parent_frame, textvariable=parent_var, width=35)
+        parent_combo = ttk.Combobox(parent_frame, textvariable=parent_var, width=40)
         parent_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Populate parent choices
@@ -645,7 +643,7 @@ class LedgerGUI(tk.Tk):
         for aid, acct in sorted(self.manager.accounts.items()):
             if aid == 0:
                 continue
-            parent_choices[f"{aid}: {acct.name} ({acct.acct_type})"] = aid
+            parent_choices[f"{acct.name} ({acct.acct_type})"] = aid
         parent_combo["values"] = list(parent_choices.keys())
         if parent_choices:
             parent_combo.current(0)
