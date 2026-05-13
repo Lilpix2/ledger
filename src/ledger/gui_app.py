@@ -755,115 +755,79 @@ class LedgerGUI(tk.Tk):
             self._import_qif_file(path)
 
     def _import_csv(self, path: str) -> None:
-        """Import a CSV file (same format as the reconciled CSVs)."""
+        """Import a CSV file with category mapping dialog."""
         from tkinter import messagebox
-        import csv
-        from datetime import datetime
+        from .gui.dialogs import CSVImportDialog
 
-        basename = os.path.basename(path)
-        account_name = simpledialog.askstring(
-            "Account Name",
-            f"Enter the account name for this CSV:\n(e.g. Alex College XX3233)",
-            initialvalue=os.path.splitext(basename)[0].split("---")[0].replace("_", " ").title(),
-        )
-        if not account_name:
+        # Open the mapping dialog
+        dlg = CSVImportDialog(self, path, "", self.manager)
+        if dlg.result is None:
             return
 
-        # Parse and preview
-        rows = []
+        result = dlg.result
+        account_name = result["account_name"]
+        cat_map = result["cat_map"]
+
+        # Find or create the main import account
+        acct_id = None
+        for aid, a in self.manager.accounts.items():
+            if a.name == account_name:
+                acct_id = aid
+                break
+        if acct_id is None:
+            acct_id = self.manager.add_account(account_name, 1, "ASSET")
+
+        # Import using the mapping
         try:
+            from datetime import datetime
+            from ledger.models.data_class import Split
+            import csv
+
             with open(path, encoding="utf-8") as f:
                 reader = csv.DictReader(f)
+                import_count = 0
                 for row in reader:
-                    try:
-                        amt = float(row.get("Amount", "0") or "0")
-                    except ValueError:
-                        continue
-                    rows.append(row)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to read CSV:\n{e}")
-            return
+                    date_str = (row.get("Date") or "").strip()
+                    amt_str = (row.get("Amount") or "").strip()
+                    payee = (row.get("Payee") or "").strip()
+                    cat = (row.get("Category") or "").strip()
 
-        if not rows:
-            messagebox.showinfo("Import", "No rows found in CSV.")
-            return
-
-        # Confirm
-        total = sum(float(r["Amount"]) for r in rows if r.get("Amount"))
-        if not messagebox.askyesno(
-            "Import CSV",
-            f"File: {basename}\n"
-            f"Account: {account_name}\n"
-            f"Rows: {len(rows)}\n"
-            f"Net change: \${total:+,.2f}\n\n"
-            f"Import into the ledger?",
-        ):
-            return
-
-        # Create account and import
-        try:
-            acct_id = None
-            for aid, a in self.manager.accounts.items():
-                if a.name == account_name:
-                    acct_id = aid
-                    break
-            if acct_id is None:
-                acct_id = self.manager.add_account(account_name, 1, "ASSET")
-
-            income_acct = None
-            expense_acct = None
-
-            mgr = self.manager
-            from ledger.models.data_class import Split
-
-            import_count = 0
-            for row in rows:
-                date_str = row.get("Date", "").strip()
-                amt_str = row.get("Amount", "0").strip()
-                payee = row.get("Payee", "").strip()
-                cat = row.get("Category", "").strip()
-
-                if not date_str or not amt_str:
-                    continue
-
-                # Parse date — handle M/D'YY format
-                try:
-                    dt = datetime.strptime(date_str, "%m/%d'%y")
-                except ValueError:
-                    try:
-                        dt = datetime.strptime(date_str, "%m/%d/%Y")
-                    except ValueError:
+                    if not date_str or not amt_str:
                         continue
 
-                try:
-                    amt_cents = int(round(float(amt_str) * 100))
-                except (ValueError, TypeError):
-                    continue
+                    try:
+                        dt = datetime.strptime(date_str, "%m/%d'%y")
+                    except ValueError:
+                        try:
+                            dt = datetime.strptime(date_str, "%m/%d/%Y")
+                        except ValueError:
+                            continue
 
-                if amt_cents == 0:
-                    continue
+                    try:
+                        amt_cents = int(round(float(amt_str) * 100))
+                    except (ValueError, TypeError):
+                        continue
 
-                if amt_cents > 0:
-                    # Money in: DR account, CR income
-                    if income_acct is None:
-                        income_acct = _ensure_income_cat(mgr, cat, "Income:CSV Import")
-                    mgr.add_transaction(dt, payee or "CSV Import",
-                        [Split(acct_id, amt_cents), Split(income_acct, -amt_cents)])
-                else:
-                    # Money out: DR expense, CR account
-                    if expense_acct is None:
-                        expense_acct = _ensure_expense_cat(mgr, cat, "Expenses:CSV Import")
-                    out = abs(amt_cents)
-                    mgr.add_transaction(dt, payee or "CSV Import",
-                        [Split(expense_acct, out), Split(acct_id, -out)])
+                    if amt_cents == 0:
+                        continue
 
-                import_count += 1
+                    target = cat_map.get(cat)
+                    if target is None:
+                        continue
 
-            mgr.generate_ledger()
+                    if amt_cents > 0:
+                        self.manager.add_transaction(dt, payee or "Import",
+                            [Split(acct_id, amt_cents), Split(target, -amt_cents)])
+                    else:
+                        out = abs(amt_cents)
+                        self.manager.add_transaction(dt, payee or "Import",
+                            [Split(target, out), Split(acct_id, -out)])
+                    import_count += 1
+
+            self.manager.generate_ledger()
             messagebox.showinfo(
                 "Import Complete",
-                f"Imported {import_count} entries into '{account_name}'.\n"
-                f"Net change to account: \${total:+,.2f}",
+                f"Imported {import_count} entries into '{account_name}'.",
             )
             self._refresh_all()
 

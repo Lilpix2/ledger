@@ -18,6 +18,8 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
+import os
+
 from ledger.models.data_class import Split
 from ledger.constants import DATE_STR, ACCOUNT_SUBTYPES
 from .widgets import build_account_choices
@@ -740,3 +742,233 @@ class BuySellDialog:
 
         inv_combo.focus()
         dialog.wait_window()
+
+
+# ── CSV Import / Account Mapping ──────────────────────────────────
+
+
+class CSVImportDialog:
+    """Dialog to map CSV categories to ledger accounts before importing.
+
+    Scans the CSV for unique categories, auto-detects account types,
+    and lets the user customize each mapping before import proceeds.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        csv_path: str,
+        suggested_account: str,
+        manager: AccountManager,
+    ):
+        import csv
+        self.manager = manager
+        self.csv_path = csv_path
+        self.result: dict | None = None
+
+        # Parse CSV and detect categories
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            self.rows = list(reader)
+
+        cats: dict[str, list[dict]] = {}
+        for row in self.rows:
+            cat = (row.get("Category") or "").strip()
+            if cat:
+                if cat not in cats:
+                    cats[cat] = []
+                if len(cats[cat]) < 2:
+                    cats[cat].append({
+                        "date": row.get("Date", ""),
+                        "amount": row.get("Amount", ""),
+                        "payee": row.get("Payee", "")[:30],
+                    })
+
+        self.categories: list[dict] = []
+        for cat in sorted(cats.keys()):
+            samples = cats[cat]
+            amts = [float(s["amount"]) for s in samples if s["amount"]]
+            net_amt = sum(amts) if amts else 0
+            acct_type = self._suggest_type(cat)
+            self.categories.append({
+                "raw": cat,
+                "samples": samples,
+                "net": net_amt,
+                "type": acct_type,
+                "account_name": self._suggest_name(cat, acct_type),
+            })
+
+        self._build(parent)
+
+    @staticmethod
+    def _suggest_type(cat: str) -> str:
+        if cat.startswith("["):
+            return "ASSET"
+        lower = cat.lower()
+        if "income" in lower:
+            return "INCOME"
+        if "expense" in lower:
+            return "EXPENSE"
+        return "EXPENSE"
+
+    @staticmethod
+    def _suggest_name(cat: str, acct_type: str) -> str:
+        """Suggest a ledger account name from the category."""
+        name = cat.strip("[]").strip()
+        # Clean up common prefixes
+        if "/Alex" in name:
+            name = name.replace("/Alex", "")
+        if ":" in name:
+            parts = name.split(":")
+            name = parts[-1]
+        return name.strip()
+
+    def _build(self, parent: tk.Widget) -> None:
+        dialog = tk.Toplevel(parent)
+        dialog.title("CSV Import — Category Mapping")
+        dialog.geometry("600x500")
+        dialog.resizable(True, True)
+        dialog.transient(parent)
+        try:
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+        self.dialog = dialog
+
+        top_frame = ttk.Frame(dialog, padding=8)
+        top_frame.pack(fill=tk.X)
+
+        ttk.Label(top_frame, text=f"File: {os.path.basename(self.csv_path)}").pack(anchor=tk.W)
+        ttk.Label(top_frame, text=f"Rows: {len(self.rows)}  |  "
+                  f"Categories: {len(self.categories)}").pack(anchor=tk.W)
+
+        # Account name for this file
+        acct_frame = ttk.Frame(dialog, padding=8)
+        acct_frame.pack(fill=tk.X)
+        ttk.Label(acct_frame, text="Import into account:").pack(side=tk.LEFT)
+        self.acct_var = tk.StringVar(value=self._suggested_acct_name())
+        ttk.Entry(acct_frame, textvariable=self.acct_var, width=40).pack(
+            side=tk.LEFT, padx=4,
+        )
+
+        # Categories table
+        list_frame = ttk.LabelFrame(dialog, text="Category Mapping", padding=4)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+
+        # Scrollable area
+        canvas = tk.Canvas(list_frame, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
+        scrollable.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.create_window((0, 0), window=scrollable, anchor=tk.NW)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Header row
+        header = ttk.Frame(scrollable)
+        header.pack(fill=tk.X, pady=2)
+        for i, (text, w) in enumerate([
+            ("Category", 140), ("Type", 60), ("Account Name", 200), ("Sample", 120),
+        ]):
+            ttk.Label(header, text=text, font=("", 9, "bold"), width=w//7).pack(
+                side=tk.LEFT, padx=2,
+            )
+
+        ttk.Separator(scrollable, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
+        self.category_widgets: list[dict] = []
+
+        for cat_info in self.categories:
+            frame = ttk.Frame(scrollable)
+            frame.pack(fill=tk.X, pady=1)
+
+            # Raw category
+            ttk.Label(frame, text=cat_info["raw"][:25], width=20).pack(
+                side=tk.LEFT, padx=2,
+            )
+            # Type badge
+            badge = {"ASSET": "A", "INCOME": "I", "EXPENSE": "E"}
+            ttk.Label(frame, text=badge.get(cat_info["type"], "?"),
+                      width=4, anchor=tk.CENTER).pack(side=tk.LEFT, padx=2)
+            # Editable account name
+            name_var = tk.StringVar(value=cat_info["account_name"])
+            entry = ttk.Entry(frame, textvariable=name_var, width=28)
+            entry.pack(side=tk.LEFT, padx=2)
+            # Sample
+            sample_text = cat_info["samples"][0]["payee"] if cat_info["samples"] else ""
+            ttk.Label(frame, text=sample_text[:20], width=18).pack(
+                side=tk.LEFT, padx=2,
+            )
+
+            self.category_widgets.append({
+                "raw": cat_info["raw"],
+                "var": name_var,
+                "type": cat_info["type"],
+            })
+
+        # Buttons
+        btn_frame = ttk.Frame(dialog, padding=8)
+        btn_frame.pack(fill=tk.X)
+
+        def _cancel() -> None:
+            self.result = None
+            dialog.destroy()
+
+        def _proceed() -> None:
+            acct_name = self.acct_var.get().strip()
+            if not acct_name:
+                from tkinter import messagebox
+                messagebox.showerror("Error", "Account name is required", parent=dialog)
+                return
+
+            # Build the mapping
+            cat_map: dict[str, int] = {}
+            for w in self.category_widgets:
+                raw = w["raw"]
+                name = w["var"].get().strip() or f"Imported {raw[:20]}"
+                acct_type = w["type"]
+
+                # Find or create account
+                parent = {"ASSET": 1, "LIABILITY": 2, "INCOME": 4, "EXPENSE": 5}
+                pid = parent.get(acct_type, 5)
+
+                aid = None
+                for existing_aid, a in self.manager.accounts.items():
+                    if a.name == name and a.parent == pid:
+                        aid = existing_aid
+                        break
+                    if a.name == name and a.acct_type == acct_type:
+                        aid = existing_aid
+                        break
+
+                if aid is None:
+                    aid = self.manager.add_account(name, pid, acct_type)
+
+                cat_map[raw] = aid
+
+            self.result = {
+                "account_name": acct_name,
+                "cat_map": cat_map,
+                "total_rows": len(self.rows),
+            }
+            dialog.destroy()
+
+        ttk.Button(btn_frame, text="Cancel", command=_cancel).pack(
+            side=tk.RIGHT, padx=4,
+        )
+        ttk.Button(btn_frame, text="Import", command=_proceed).pack(
+            side=tk.RIGHT, padx=4,
+        )
+
+        dialog.wait_window()
+
+    def _suggested_acct_name(self) -> str:
+        basename = os.path.splitext(os.path.basename(self.csv_path))[0]
+        # Clean up UUID suffixes
+        if "---" in basename:
+            basename = basename.split("---")[0]
+        return basename.replace("_", " ").title().strip()
