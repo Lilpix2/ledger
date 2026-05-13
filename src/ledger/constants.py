@@ -9,3 +9,13 @@ ACCT_TYPE_MAP = {
     'income': 'INCOME',
     'expenses': 'EXPENSE',
 }
+
+# Account subtypes for classification beyond accounting type.
+# Used by checking, credit cards, brokerage, MESPs, and retirement accounts.
+ACCOUNT_SUBTYPES = frozenset({
+    "checking",
+    "credit_card",
+    "brokerage",
+    "mesp",
+    "retirement",
+})

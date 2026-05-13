@@ -28,6 +28,27 @@ CREATE TABLE IF NOT EXISTS split (
 );
 """
 
+CREATE_HOLDINGS = """
+CREATE TABLE IF NOT EXISTS holdings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL REFERENCES accounts(account_id),
+    ticker TEXT NOT NULL,
+    shares REAL NOT NULL DEFAULT 0.0,
+    cost_basis_cents INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(account_id, ticker)
+);
+"""
+
+CREATE_PRICES = """
+CREATE TABLE IF NOT EXISTS prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    date TEXT NOT NULL,
+    price_cents INTEGER NOT NULL,
+    UNIQUE(ticker, date)
+);
+"""
+
 
 def ensure_tables(conn):
     """Create tables if they don't exist (and migrate from old schema)."""
@@ -35,6 +56,8 @@ def ensure_tables(conn):
     conn.execute(CREATE_ACCOUNTS)
     conn.execute(CREATE_JOURNAL)
     conn.execute(CREATE_SPLITS)
+    conn.execute(CREATE_HOLDINGS)
+    conn.execute(CREATE_PRICES)
     conn.commit()
 
     # Migration: drop old single-split columns if they exist
@@ -51,6 +74,11 @@ def ensure_tables(conn):
     # Migration: add is_contra column to accounts
     try:
         conn.execute("ALTER TABLE accounts ADD COLUMN is_contra INTEGER NOT NULL DEFAULT 0")
+    except conn.OperationalError:
+        pass
+    # Migration: add account_subtype column to accounts
+    try:
+        conn.execute("ALTER TABLE accounts ADD COLUMN account_subtype TEXT")
     except conn.OperationalError:
         pass
     conn.commit()

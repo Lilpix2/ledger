@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ..constants import PARENTS, ACCT_TYPE_MAP, DATE_STR
+from ..constants import PARENTS, ACCT_TYPE_MAP, ACCOUNT_SUBTYPES, DATE_STR
 from ..database.database_controller import DatabaseController
 from ..models.data_books import Ledger, Journal
-from ..models.data_class import JournalTransaction, Split
+from ..models.data_class import JournalTransaction, Split, Holding, Price
 
 DEFAULT_DB_PATH = "data/journal.db"
 
@@ -26,12 +26,15 @@ class Account:
         parent: int | None = None,
         acct_type: str = "ASSET",
         is_contra: bool = False,
+        account_subtype: str | None = None,
     ):
         self.name = name
         self.parent = parent
         self.acct_type = acct_type
         self.is_contra = is_contra
+        self.account_subtype = account_subtype
         self.ledger = Ledger()
+        self.holdings: dict[str, Holding] = {}  # ticker → Holding
 
     def __eq__(self, value):
         return self.name == value.name if isinstance(value, Account) else False
@@ -55,18 +58,26 @@ class AccountManager:
     # ── Init / Load ─────────────────────────────────────────────────
 
     def _load_state(self):
-        """Load accounts and transactions from the database into memory."""
+        """Load accounts, holdings, and transactions from the database into memory."""
         db_accounts = self.db.load_accounts()
 
         if not db_accounts:
             self._generate_parents()
         else:
-            for acct_id, name, parent_id, acct_type, is_contra in db_accounts:
+            for acct_id, name, parent_id, acct_type, is_contra, acc_subtype in db_accounts:
                 parent = parent_id if parent_id is not None else 0
-                self.accounts[acct_id] = Account(name, parent, acct_type, bool(is_contra))
+                self.accounts[acct_id] = Account(
+                    name, parent, acct_type, bool(is_contra), acc_subtype
+                )
 
             for txn in self.db.load_transactions():
                 self.journal.add_transaction(txn)
+
+            # Load holdings into each account
+            for holding in self.db.load_holdings():
+                if holding.account_id in self.accounts:
+                    acct = self.accounts[holding.account_id]
+                    acct.holdings[holding.ticker] = holding
 
         self.account_num = max(self.accounts.keys()) + 1
 
@@ -89,9 +100,16 @@ class AccountManager:
         parent: int | None = None,
         acct_type: str | None = None,
         is_contra: bool = False,
+        account_subtype: str | None = None,
     ) -> int:
         if name in [a.name for a in self.accounts.values()]:
             raise ValueError(f"Account '{name}' already exists")
+
+        if account_subtype is not None and account_subtype not in ACCOUNT_SUBTYPES:
+            raise ValueError(
+                f"Invalid account_subtype '{account_subtype}'. "
+                f"Valid: {', '.join(sorted(ACCOUNT_SUBTYPES))}"
+            )
 
         # Inherit type from parent if not explicitly provided
         if acct_type is None and parent is not None and parent in self.accounts:
@@ -100,8 +118,8 @@ class AccountManager:
             acct_type = "ASSET"
 
         db_parent = parent if parent != 0 else None
-        acct_id = self.db.save_account(name, db_parent, acct_type, is_contra)
-        self.accounts[acct_id] = Account(name, parent, acct_type, is_contra)
+        acct_id = self.db.save_account(name, db_parent, acct_type, is_contra, account_subtype)
+        self.accounts[acct_id] = Account(name, parent, acct_type, is_contra, account_subtype)
         return acct_id
 
     # ── Transactions (compound) ─────────────────────────────────────
@@ -263,6 +281,228 @@ class AccountManager:
         if self.is_debit_normal(account_id):
             return raw
         return -raw
+
+    # ── Holdings / Positions ────────────────────────────────────────
+
+    def set_holding(self, account_id: int, ticker: str, shares: float, cost_basis_cents: int) -> None:
+        """Set a holding position for an account.
+
+        Must be a subtype account (brokerage, mesp, retirement) -
+        but enforcement is by convention, not restriction.
+        """
+        if account_id not in self.accounts:
+            raise ValueError(f"No account with ID {account_id}")
+
+        holding = Holding(account_id, ticker, shares, cost_basis_cents)
+        self.db.save_holding(holding)
+        self.accounts[account_id].holdings[ticker] = holding
+
+    def get_holdings(self, account_id: int) -> list[Holding]:
+        """Return all holdings for an account."""
+        if account_id not in self.accounts:
+            raise ValueError(f"No account with ID {account_id}")
+        return list(self.accounts[account_id].holdings.values())
+
+    def get_all_holdings(self) -> list[Holding]:
+        """Return all holdings across all accounts."""
+        result = []
+        for acct_id, acct in self.accounts.items():
+            if acct_id != 0 and acct.holdings:
+                result.extend(acct.holdings.values())
+        return result
+
+    def delete_holding(self, account_id: int, ticker: str) -> None:
+        """Remove a holding."""
+        if account_id in self.accounts:
+            self.accounts[account_id].holdings.pop(ticker, None)
+        self.db.delete_holding(account_id, ticker)
+
+    def get_holdings_nav(self, account_id: int) -> int:
+        """Return the total cost basis of all holdings in an account (cents)."""
+        acct = self.accounts.get(account_id)
+        if not acct:
+            return 0
+        return sum(h.cost_basis_cents for h in acct.holdings.values())
+
+    def save_price(self, ticker: str, date: str, price_cents: int) -> None:
+        self.db.save_price(Price(ticker, date, price_cents))
+
+    def get_price(self, ticker: str, date: str) -> int | None:
+        """Get price for a ticker on a specific date."""
+        prices = self.db.load_prices(ticker)
+        for p in prices:
+            if p.date == date:
+                return p.price_cents
+        return None
+
+    def get_latest_price(self, ticker: str) -> int | None:
+        """Get the most recent price quote for a ticker."""
+        prices = self.db.load_prices(ticker)
+        if not prices:
+            return None
+        return prices[-1].price_cents
+
+    def portfolio_market_value(self, account_id: int) -> int | None:
+        """Calculate the total market value of all holdings in an account.
+
+        Returns None if any holding lacks a price quote.
+        """
+        acct = self.accounts.get(account_id)
+        if not acct or not acct.holdings:
+            return 0
+
+        total = 0
+        for h in acct.holdings.values():
+            price = self.get_latest_price(h.ticker)
+            if price is None:
+                return None  # Can't calculate without prices
+            total += int(h.shares * price)
+        return total
+
+    # ── Buy / Sell (Investment Transactions) ───────────────────────
+
+    def _avg_cost_basis(self, account_id: int, ticker: str) -> float:
+        """Return the average cost per share in cents for a holding."""
+        acct = self.accounts.get(account_id)
+        if not acct or ticker not in acct.holdings:
+            return 0.0
+        h = acct.holdings[ticker]
+        if h.shares <= 0:
+            return 0.0
+        return h.cost_basis_cents / h.shares
+
+    def buy_security(
+        self,
+        date: datetime,
+        description: str,
+        brokerage_id: int,
+        cash_id: int,
+        ticker: str,
+        shares: float,
+        price_cents: int,
+        memo: str = "",
+    ) -> int:
+        """Buy shares of a security.
+
+        Creates a journal entry debiting the brokerage (increasing asset
+        value) and crediting the cash account (money leaving).  Updates
+        the holdings table with the new position.
+
+        Returns the journal entry ID.
+        """
+        if brokerage_id not in self.accounts or cash_id not in self.accounts:
+            raise ValueError("Invalid account ID")
+        if shares <= 0:
+            raise ValueError("Shares must be positive")
+
+        total_cents = int(shares * price_cents)
+        if total_cents == 0:
+            raise ValueError("Total cost must be non-zero")
+
+        buy_memo = memo or f"Buy {shares} × {ticker} @ ${price_cents/100:.2f}"
+        cash_memo = memo or f"Funds for {ticker} purchase"
+
+        splits = [
+            Split(brokerage_id, total_cents, memo=buy_memo),
+            Split(cash_id, -total_cents, memo=cash_memo),
+        ]
+        txn_id = self.add_transaction(date, description, splits)
+
+        # Update holdings (average cost basis)
+        existing = self.accounts[brokerage_id].holdings.get(ticker)
+        if existing:
+            new_shares = existing.shares + shares
+            new_cost = existing.cost_basis_cents + total_cents
+        else:
+            new_shares = shares
+            new_cost = total_cents
+
+        self.set_holding(brokerage_id, ticker, round(new_shares, 6), new_cost)
+        return txn_id
+
+    def sell_security(
+        self,
+        date: datetime,
+        description: str,
+        brokerage_id: int,
+        cash_id: int,
+        ticker: str,
+        shares: float,
+        price_cents: int,
+        memo: str = "",
+        gain_account_id: int | None = None,
+    ) -> tuple[int, int]:
+        """Sell shares of a security.
+
+        Creates a journal entry:
+        - Debit cash (proceeds arriving)
+        - Credit brokerage (cost basis removed)
+        - [Credit gain_account if realized gain, debit if realized loss]
+
+        Uses average-cost-basis for the shares sold.
+
+        Parameters
+        ----------
+        gain_account_id : int or None
+            If provided, realized gains are booked to this account
+            (credit for income, debit for loss/expense).  If None,
+            gains/losses are not separately booked — they're implicit
+            in the brokerage split.
+
+        Returns
+        -------
+        tuple[int, int]
+            (journal_entry_id, realized_gain_cents)
+        """
+        if brokerage_id not in self.accounts or cash_id not in self.accounts:
+            raise ValueError("Invalid account ID")
+        if shares <= 0:
+            raise ValueError("Shares must be positive")
+
+        existing = self.accounts[brokerage_id].holdings.get(ticker)
+        if not existing:
+            raise ValueError(f"No position in {ticker} to sell")
+        if shares > existing.shares + 0.0001:
+            raise ValueError(
+                f"Cannot sell {shares} shares of {ticker}, "
+                f"only {existing.shares:.4f} available"
+            )
+
+        total_cents = int(shares * price_cents)
+        if total_cents == 0:
+            raise ValueError("Total proceeds must be non-zero")
+
+        # Average cost basis
+        avg_cost = existing.cost_basis_cents / existing.shares
+        cost_of_sold = int(round(shares * avg_cost))
+        realized_gain = total_cents - cost_of_sold
+
+        sell_memo = memo or f"Sell {shares} × {ticker} @ ${price_cents/100:.2f}"
+
+        splits = [
+            Split(cash_id, total_cents, memo=sell_memo),
+            Split(brokerage_id, -cost_of_sold, memo=f"Cost: {shares} × {ticker}"),
+        ]
+
+        if gain_account_id is not None and realized_gain != 0:
+            # For a gain: credit the income account (negative split = credit)
+            # For a loss: debit an expense/loss account (positive split = debit)
+            # In both cases, -realized_gain gives the right sign
+            gain_memo = f"{'Gain' if realized_gain > 0 else 'Loss'} on {ticker} sale"
+            splits.append(Split(gain_account_id, -realized_gain, memo=gain_memo))
+
+        txn_id = self.add_transaction(date, description, splits)
+
+        # Update holdings
+        new_shares = max(0.0, existing.shares - shares)
+        new_cost = max(0, existing.cost_basis_cents - cost_of_sold)
+
+        if new_shares < 0.0001:
+            self.delete_holding(brokerage_id, ticker)
+        else:
+            self.set_holding(brokerage_id, ticker, round(new_shares, 6), new_cost)
+
+        return txn_id, realized_gain
 
     # ── Financial Reports ───────────────────────────────────────────
 

@@ -53,3 +53,26 @@ class LedgerEntry:
             'debit': self.debit,
             'balance': self.balance,
         }
+
+
+@dataclass
+class Holding:
+    """A security position within a brokerage/mesp/retirement account.
+
+    ``account_id`` — the brokerage/mesp account owning the position.
+    ``ticker`` — security symbol (e.g. AAPL, VTI, MESP-MD-R1).
+    ``shares`` — number of shares held (REAL for fractional shares).
+    ``cost_basis_cents`` — total cost basis in cents.
+    """
+    account_id: int
+    ticker: str
+    shares: float
+    cost_basis_cents: int = 0
+
+
+@dataclass
+class Price:
+    """A historical price quote for a security."""
+    ticker: str
+    date: str
+    price_cents: int

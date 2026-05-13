@@ -139,8 +139,11 @@ def _valid_account_id(value: str, account_ids: set[int]) -> bool:
 # ── Modal: Add Account ─────────────────────────────────────────────
 
 
-class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
-    """Modal for creating a new account."""
+class AddAccountScreen(ModalScreen[tuple[str, int, str | None] | None]):
+    """Modal for creating a new account.
+
+    Returns (name, parent_id, account_subtype) or None.
+    """
 
     def compose(self) -> ComposeResult:
         yield Static("── Add Account ──", id="title")
@@ -150,6 +153,10 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
         yield Static("", id="selected-parent")
         yield Input(placeholder="Account name", id="acct-name")
         yield Input(placeholder="Or type parent ID", id="acct-parent")
+        yield Input(
+            placeholder="Subtype (optional): checking, credit_card, brokerage, mesp, retirement",
+            id="acct-subtype",
+        )
         with Horizontal(id="buttons"):
             yield Button("Submit", variant="primary", id="submit")
             yield Button("Cancel", id="cancel")
@@ -211,12 +218,24 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
         account_ids = set(self.app.manager.accounts.keys()) - {0}  # type: ignore[attr-defined]
         _set_valid(input_w, value.isnumeric() and int(value) in account_ids)
 
+    @on(Input.Changed, "#acct-subtype")
+    def _validate_subtype(self, event: Input.Changed) -> None:
+        value = event.value.strip().lower()
+        w = event.input
+        if not value:
+            w.remove_class("valid", "invalid")
+            return
+        from ..constants import ACCOUNT_SUBTYPES
+        _set_valid(w, value in ACCOUNT_SUBTYPES)
+
     # ── Actions ─────────────────────────────────────
 
     @on(Button.Pressed, "#submit")
     def submit(self) -> None:
         name = self.query_one("#acct-name", Input).value.strip()
         parent_str = self.query_one("#acct-parent", Input).value.strip()
+        subtype = self.query_one("#acct-subtype", Input).value.strip().lower() or None
+
         if not name:
             self.query_one("#acct-name", Input).value = "Name is required"
             return
@@ -224,7 +243,7 @@ class AddAccountScreen(ModalScreen[tuple[str, int] | None]):
             self.query_one("#acct-parent", Input).value = "Must be a number"
             return
         parent = int(parent_str)
-        self.dismiss((name, parent))
+        self.dismiss((name, parent, subtype))
 
     @on(Button.Pressed, "#cancel")
     def cancel(self) -> None:
@@ -452,6 +471,259 @@ class AddTransactionScreen(ModalScreen[tuple[datetime, str, list] | None]):
     def cancel(self):
         self.dismiss(None)
 
+# ── Modal: Buy / Sell (Investment Transaction) ──────────────────────
+
+
+class BuySellScreen(ModalScreen[dict | None]):
+    """Modal for a buy/sell investment transaction.
+
+    Returns a dict with keys:
+    - direction: "buy" or "sell"
+    - investment_id: account ID (brokerage/mesp/retirement)
+    - cash_id: funding/destination account
+    - ticker: str
+    - shares: float
+    - price_cents: int per share
+    - date: datetime
+    - description: str
+    - gain_account_id: int or None (sells only)
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static("── Buy / Sell ──", id="title")
+
+        yield Static("Direction:", classes="field-label")
+        with Horizontal(id="dir-row"):
+            yield Button("Buy", id="dir-buy", variant="primary")
+            yield Button("Sell", id="dir-sell", variant="default")
+
+        yield Static("Investment account (brokerage/mesp/retirement):", classes="field-label")
+        with Horizontal(id="inv-row"):
+            yield Input(placeholder="Account ID", id="inv-acct", classes="acct-input")
+            yield Button("Pick", id="inv-pick", variant="default")
+
+        yield Static("Cash account (source / destination):", classes="field-label")
+        with Horizontal(id="cash-row"):
+            yield Input(placeholder="Account ID", id="cash-acct", classes="acct-input")
+            yield Button("Pick", id="cash-pick", variant="default")
+
+        with Horizontal(id="date-row"):
+            yield Input(
+                placeholder="Date: " + DATE_STR,
+                id="txn-date",
+                value=datetime.now().strftime(DATE_STR),
+            )
+            yield Button("\U0001f4c5", id="cal-btn", variant="default")
+
+        yield Input(placeholder="Description", id="txn-desc")
+
+        with Horizontal(id="ticker-row"):
+            yield Input(placeholder="Ticker (e.g. AAPL)", id="ticker", classes="half-input")
+            yield Input(placeholder="Shares", id="shares", classes="half-input")
+
+        with Horizontal(id="price-row"):
+            yield Static("$", id="price-symbol")
+            yield Input(placeholder="Price per share in cents", id="price", classes="half-input")
+
+        yield Static("Gains account (optional, sells only):", id="gain-label", classes="field-label")
+        with Horizontal(id="gain-row"):
+            yield Input(placeholder="Account ID or leave blank", id="gain-acct", classes="acct-input")
+
+        with Horizontal(id="buttons"):
+            yield Button("Submit", variant="primary", id="submit")
+            yield Button("Cancel", id="cancel")
+
+        # Account picker datatable (hidden until pick is clicked)
+        yield DataTable(id="acct-picker", classes="picker-table", zebra_stripes=True)
+
+    def on_mount(self):
+        self._direction = "buy"
+        self.query_one("#acct-picker", DataTable).visible = False
+        self.query_one("#gain-row", Horizontal).visible = False
+        self.query_one("#gain-label", Static).visible = False
+        self.query_one("#txn-date", Input).focus()
+
+    # ── Direction toggle ────────────────────────────────
+
+    @on(Button.Pressed, "#dir-buy")
+    def _set_buy(self):
+        self._direction = "buy"
+        self.query_one("#dir-buy", Button).variant = "primary"
+        self.query_one("#dir-sell", Button).variant = "default"
+        self.query_one("#gain-row", Horizontal).visible = False
+        self.query_one("#gain-label", Static).visible = False
+
+    @on(Button.Pressed, "#dir-sell")
+    def _set_sell(self):
+        self._direction = "sell"
+        self.query_one("#dir-sell", Button).variant = "primary"
+        self.query_one("#dir-buy", Button).variant = "default"
+        self.query_one("#gain-row", Horizontal).visible = True
+        self.query_one("#gain-label", Static).visible = True
+
+    # ── Account picker modal within modal ───────────────
+
+    def _show_picker(self, target_id: str):
+        """Show the account picker table, filtered to relevant acct types."""
+        self._picker_target = target_id
+        table = self.query_one("#acct-picker", DataTable)
+        table.clear()
+        table.add_columns("ID", "Name", "Type", "Subtype")
+        table.zebra_stripes = True
+        table.cursor_type = "row"
+
+        manager = self.app.manager
+        for acct_id, acct in sorted(manager.accounts.items()):
+            if acct_id == 0:
+                continue
+            subtype = acct.account_subtype or ""
+            table.add_row(
+                str(acct_id), acct.name, acct.acct_type, subtype,
+                key=str(acct_id),
+            )
+
+        table.visible = True
+        table.focus()
+
+    @on(Button.Pressed, "#inv-pick")
+    def _pick_investment(self):
+        self._show_picker("inv-acct")
+
+    @on(Button.Pressed, "#cash-pick")
+    def _pick_cash(self):
+        self._show_picker("cash-acct")
+
+    @on(DataTable.RowSelected, "#acct-picker")
+    def _picker_row_selected(self, event: DataTable.RowSelected):
+        acct_id = str(event.row_key)
+        target = self.query_one(f"#{self._picker_target}", Input)
+        target.value = acct_id
+        self.query_one("#acct-picker", DataTable).visible = False
+
+    # ── Validation ──────────────────────────────────────
+
+    @on(Input.Changed, ".acct-input")
+    def _validate_acct_input(self, event: Input.Changed):
+        value = event.value.strip()
+        w = event.input
+        if not value:
+            w.remove_class("valid", "invalid")
+            return
+        account_ids = set(self.app.manager.accounts.keys())
+        _set_valid(w, value.isnumeric() and int(value) in account_ids)
+
+    @on(Input.Changed, "#txn-date")
+    def _validate_date(self, event: Input.Changed):
+        value = event.value.strip()
+        w = event.input
+        if not value:
+            w.remove_class("valid", "invalid")
+            return
+        try:
+            datetime.strptime(value, DATE_STR)
+            _set_valid(w, True)
+        except ValueError:
+            _set_valid(w, False)
+
+    @on(Input.Changed, "#shares")
+    def _validate_shares(self, event: Input.Changed):
+        value = event.value.strip()
+        w = event.input
+        if not value:
+            w.remove_class("valid", "invalid")
+            return
+        try:
+            f = float(value)
+            _set_valid(w, f > 0)
+        except ValueError:
+            _set_valid(w, False)
+
+    @on(Input.Changed, "#price")
+    def _validate_price(self, event: Input.Changed):
+        value = event.value.strip()
+        w = event.input
+        if not value:
+            w.remove_class("valid", "invalid")
+            return
+        _set_valid(w, value.lstrip("-").isnumeric() and int(value) > 0)
+
+    # ── Calendar ────────────────────────────────────────
+
+    @on(Button.Pressed, "#cal-btn")
+    def _open_calendar(self):
+        def _handle_date(selected):
+            if selected is not None:
+                self.query_one("#txn-date", Input).value = selected.strftime(DATE_STR)
+        self.app.push_screen(DatePickerModal(), _handle_date)
+
+    # ── Submit / Cancel ─────────────────────────────────
+
+    @on(Button.Pressed, "#submit")
+    def submit(self):
+        date_str = self.query_one("#txn-date", Input).value.strip()
+        desc = self.query_one("#txn-desc", Input).value.strip()
+        ticker = self.query_one("#ticker", Input).value.strip().upper()
+        shares_str = self.query_one("#shares", Input).value.strip()
+        price_str = self.query_one("#price", Input).value.strip()
+        inv_str = self.query_one("#inv-acct", Input).value.strip()
+        cash_str = self.query_one("#cash-acct", Input).value.strip()
+
+        if not all([date_str, desc, ticker, shares_str, price_str, inv_str, cash_str]):
+            self.notify("All required fields must be filled", severity="error")
+            return
+
+        try:
+            date = datetime.strptime(date_str, DATE_STR)
+        except ValueError:
+            self.notify("Invalid date format", severity="error")
+            return
+
+        try:
+            shares = float(shares_str)
+        except ValueError:
+            self.notify("Shares must be a number", severity="error")
+            return
+
+        try:
+            price_cents = int(price_str)
+        except ValueError:
+            self.notify("Price must be in whole cents", severity="error")
+            return
+
+        try:
+            inv_id = int(inv_str)
+            cash_id = int(cash_str)
+        except ValueError:
+            self.notify("Account IDs must be numbers", severity="error")
+            return
+
+        gain_id = None
+        if self._direction == "sell":
+            gain_str = self.query_one("#gain-acct", Input).value.strip()
+            if gain_str:
+                try:
+                    gain_id = int(gain_str)
+                except ValueError:
+                    self.notify("Gains account ID must be a number", severity="error")
+                    return
+
+        self.dismiss({
+            "direction": self._direction,
+            "investment_id": inv_id,
+            "cash_id": cash_id,
+            "ticker": ticker,
+            "shares": shares,
+            "price_cents": price_cents,
+            "date": date,
+            "description": desc,
+            "gain_account_id": gain_id,
+        })
+
+    @on(Button.Pressed, "#cancel")
+    def cancel(self):
+        self.dismiss(None)
+
+
 # ── Main App ───────────────────────────────────────────────────────
 
 
@@ -605,6 +877,7 @@ class LedgerApp(App[None]):
         margin: 0 0 0 1;
     }
 
+    AddAccountScreen Input,
     AddTransactionScreen Input {
         margin: 0 0 1 0;
     }
@@ -617,6 +890,90 @@ class LedgerApp(App[None]):
 
     AddAccountScreen Button,
     AddTransactionScreen Button {
+        margin: 0 1;
+    }
+
+    /* ── Buy/Sell Modal ─────────────────────────── */
+    BuySellScreen {
+        align: center middle;
+    }
+
+    BuySellScreen > #title {
+        text-style: bold;
+        padding: 0 0 1 0;
+        width: 100%;
+        content-align: center middle;
+    }
+
+    BuySellScreen .field-label {
+        height: 1;
+        padding: 0 0 0 0;
+        text-style: italic;
+        margin: 0 0 0 0;
+    }
+
+    BuySellScreen Input {
+        margin: 0 0 1 0;
+    }
+
+    BuySellScreen .acct-input {
+        width: 80%;
+        margin: 0 0 1 0;
+    }
+
+    BuySellScreen .half-input {
+        width: 50%;
+        margin: 0 0 1 0;
+    }
+
+    BuySellScreen #dir-row {
+        height: 3;
+        margin: 0 0 1 0;
+    }
+
+    BuySellScreen #dir-row > Button {
+        width: 20;
+        margin: 0 1 0 0;
+    }
+
+    BuySellScreen #inv-row,
+    BuySellScreen #cash-row,
+    BuySellScreen #gain-row {
+        height: 3;
+        margin: 0 0 0 0;
+    }
+
+    BuySellScreen #inv-row > Button,
+    BuySellScreen #cash-row > Button,
+    BuySellScreen #gain-row > Button {
+        width: 10;
+        margin: 0 0 0 1;
+    }
+
+    BuySellScreen #ticker-row,
+    BuySellScreen #price-row {
+        height: 3;
+        margin: 0 0 0 0;
+    }
+
+    BuySellScreen #price-symbol {
+        width: 2;
+        content-align: center middle;
+        margin: 0 0 1 0;
+    }
+
+    BuySellScreen .picker-table {
+        height: 10;
+        border: solid $primary;
+        margin: 1 0 0 0;
+    }
+
+    BuySellScreen > #buttons {
+        align: center middle;
+        margin: 1 0 0 0;
+    }
+
+    BuySellScreen Button {
         margin: 0 1;
     }
     """
@@ -670,7 +1027,12 @@ class LedgerApp(App[None]):
             for child_id in tree_data.get(parent_id, []):
                 account = self.manager.accounts[child_id]
                 balance_cents = self.manager.get_display_balance(child_id)
-                label = f"{account.name}  [dim]({account.acct_type})[/]  (${balance_cents/100:,.2f})"
+                subtype_tag = f" [{account.account_subtype}]" if account.account_subtype else ""
+                label = (
+                    f"{account.name}  "
+                    f"[dim]({account.acct_type}{subtype_tag})[/]  "
+                    f"(${balance_cents/100:,.2f})"
+                )
                 node = parent_node.add(label, data={"account_id": child_id})
                 _add_children(node, child_id)
 
@@ -690,12 +1052,17 @@ class LedgerApp(App[None]):
             raw_bal = self.manager.aggregated_balance(account_id)
             direction = "debit-normal" if self.manager.is_debit_normal(account_id) else "credit-normal"
 
+            subtype_info = f"Subtype: {account.account_subtype}\n" if account.account_subtype else ""
+            holding_count = len(account.holdings)
+            holdings_info = f"Holdings: {holding_count} positions\n" if holding_count else ""
             msg = (
                 f"[bold]{account.name}[/]  [dim]({account.acct_type})[/]\n"
                 f"Display balance: ${display_bal/100:,.2f}\n"
                 f"Raw balance: ${raw_bal/100:,.2f}\n"
                 f"Normal: {direction}\n"
                 f"Type: {account.acct_type}\n"
+                f"{subtype_info}"
+                f"{holdings_info}"
             )
             if account.parent:
                 parent_name = self.manager.accounts[account.parent].name
@@ -784,21 +1151,72 @@ class LedgerApp(App[None]):
     def action_add_account(self) -> None:
         self.push_screen(AddAccountScreen(), self._handle_add_account)
 
-    def _handle_add_account(self, result: tuple[str, int] | None) -> None:
+    def _handle_add_account(self, result: tuple[str, int, str | None] | None) -> None:
         if result is None:
             return
-        name, parent = result
+        name, parent, subtype = result
         try:
-            self.manager.add_account(name, parent)
+            self.manager.add_account(name, parent, account_subtype=subtype)
             self.manager.generate_ledger()
             self._populate_tree()
             self._refresh_status()
-            self.notify(f"Account '{name}' created", severity="information")
+            subtype_info = f" ({subtype})" if subtype else ""
+            self.notify(f"Account '{name}'{subtype_info} created", severity="information")
         except ValueError as e:
             self.notify(str(e), severity="error")
 
     def action_add_transaction(self) -> None:
         self.push_screen(AddTransactionScreen(), self._handle_add_transaction)
+
+    def action_buy_sell(self) -> None:
+        """Open the buy/sell investment modal."""
+        self.push_screen(BuySellScreen(), self._handle_buy_sell)
+
+    def _handle_buy_sell(self, result: dict | None) -> None:
+        if result is None:
+            return
+
+        try:
+            if result["direction"] == "buy":
+                txn_id = self.manager.buy_security(
+                    date=result["date"],
+                    description=result["description"],
+                    brokerage_id=result["investment_id"],
+                    cash_id=result["cash_id"],
+                    ticker=result["ticker"],
+                    shares=result["shares"],
+                    price_cents=result["price_cents"],
+                )
+                self.notify(
+                    f"Bought {result['shares']} × {result['ticker']} "
+                    f"(txn #{txn_id})",
+                    severity="information",
+                )
+            else:
+                txn_id, realized = self.manager.sell_security(
+                    date=result["date"],
+                    description=result["description"],
+                    brokerage_id=result["investment_id"],
+                    cash_id=result["cash_id"],
+                    ticker=result["ticker"],
+                    shares=result["shares"],
+                    price_cents=result["price_cents"],
+                    gain_account_id=result.get("gain_account_id"),
+                )
+                gain_str = f" (realized ${abs(realized)/100:,.2f})" if realized else ""
+                self.notify(
+                    f"Sold {result['shares']} × {result['ticker']}{gain_str} "
+                    f"(txn #{txn_id})",
+                    severity="information",
+                )
+
+            self.manager.generate_ledger()
+            self._populate_tree()
+            self._populate_table()
+            self._refresh_status()
+
+        except ValueError as e:
+            self.notify(str(e), severity="error")
 
     def _handle_add_transaction(self, result: tuple[datetime, str, list] | None) -> None:
         if result is None:
