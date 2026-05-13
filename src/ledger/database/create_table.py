@@ -3,10 +3,11 @@
 CREATE_ACCOUNTS = """
 CREATE TABLE IF NOT EXISTS accounts (
     account_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
     parent_id INTEGER REFERENCES accounts(account_id),
     acct_type TEXT NOT NULL DEFAULT 'ASSET',
-    is_contra INTEGER NOT NULL DEFAULT 0
+    is_contra INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(name, parent_id)
 );
 """
 
@@ -50,6 +51,36 @@ CREATE TABLE IF NOT EXISTS prices (
 """
 
 
+def _migrate_accounts_uniqueness(conn):
+    """Replace global UNIQUE(name) with UNIQUE(name, parent_id).
+
+    SQLite can't ALTER TABLE to drop a constraint, so we recreate the
+    table when the old schema is detected.
+    """
+    # Detect old schema: check if we can insert a duplicate name under
+    # a different parent. If the old constraint is in place, we need
+    # to migrate.
+    cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'")
+    row = cursor.fetchone()
+    if row and 'name TEXT NOT NULL UNIQUE' in row[0]:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("""
+            CREATE TABLE accounts_new (
+                account_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                parent_id INTEGER REFERENCES accounts(account_id),
+                acct_type TEXT NOT NULL DEFAULT 'ASSET',
+                is_contra INTEGER NOT NULL DEFAULT 0,
+                account_subtype TEXT,
+                UNIQUE(name, parent_id)
+            )
+        """)
+        conn.execute("INSERT INTO accounts_new SELECT * FROM accounts")
+        conn.execute("DROP TABLE accounts")
+        conn.execute("ALTER TABLE accounts_new RENAME TO accounts")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def ensure_tables(conn):
     """Create tables if they don't exist (and migrate from old schema)."""
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -81,4 +112,6 @@ def ensure_tables(conn):
         conn.execute("ALTER TABLE accounts ADD COLUMN account_subtype TEXT")
     except conn.OperationalError:
         pass
+    # Migration: remove global UNIQUE on name, replace with (name, parent_id) UNIQUE
+    _migrate_accounts_uniqueness(conn)
     conn.commit()

@@ -102,8 +102,13 @@ class AccountManager:
         is_contra: bool = False,
         account_subtype: str | None = None,
     ) -> int:
-        if name in [a.name for a in self.accounts.values()]:
-            raise ValueError(f"Account '{name}' already exists")
+        # Allow duplicate names under different parents (e.g. two mutual
+        # funds with the same name in different brokerage accounts).
+        if any(
+            a.name == name and a.parent == parent
+            for a in self.accounts.values()
+        ):
+            raise ValueError(f"Account '{name}' already exists under this parent")
 
         if account_subtype is not None and account_subtype not in ACCOUNT_SUBTYPES:
             raise ValueError(
