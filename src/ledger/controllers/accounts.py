@@ -759,6 +759,20 @@ class AccountManager:
             if bal > 0:
                 div_total += bal
 
+        # If closing entries have been run, income/expense accounts are zeroed
+        # and RE's ledger balance ALREADY contains this period's net income.
+        # The income report still finds the original transactions, so we'd double-count.
+        # Detect this case and zero out NI to avoid inflation.
+        income_ids = self.get_descendant_ids(4)
+        expense_ids = self.get_descendant_ids(5)
+        all_zero = all(
+            self.accounts[aid].get_balance() == 0
+            for aid in list(income_ids) + list(expense_ids)
+            if aid in self.accounts
+        )
+        if all_zero and ni != 0:
+            ni = 0  # NI already closed into RE ledger balance
+
         # Prior period RE from ledger, current period from operations
         beginning_re = max(re_actual_display, 0)
         ending_re = beginning_re + ni - div_total
@@ -820,9 +834,10 @@ class AccountManager:
         equity_ids = self.get_descendant_ids(3)
         div_ids = self.get_descendant_ids(9)
 
-        # Use computed Retained Earnings from the RE statement
-        re_stmt = self.gen_retained_earnings_statement()
-        computed_re = re_stmt["ending_re"]
+        # Use the ACTUAL ledger Retained Earnings balance, not the computed
+        # statement (which may double-count if closing entries were run twice).
+        re_raw = self.accounts[6].get_balance()
+        computed_re = max(-re_raw, 0)  # RE is credit-normal
 
         a_items: list[tuple[str, int]] = []
         l_items: list[tuple[str, int]] = []
