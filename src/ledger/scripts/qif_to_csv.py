@@ -145,7 +145,7 @@ def parse_qif(text: str) -> list[QIFRecord]:
 
             # !Type:Xxx → determine if this produces CSV rows
             if line.startswith("!Type:"):
-                section = line[6:].lower()
+                section = line[6:].strip().lower()
                 in_transaction_section = section in TRANSACTION_TYPES
                 if in_transaction_section:
                     # Normalize section names for output
@@ -177,7 +177,7 @@ def parse_qif(text: str) -> list[QIFRecord]:
                 # by feeding it through the loop again via continue,
                 # but we need to handle it here directly.
                 if remainder.startswith("!Type:"):
-                    section = remainder[6:].lower()
+                    section = remainder[6:].strip().lower()
                     in_transaction_section = section in TRANSACTION_TYPES
                     if in_transaction_section:
                         acct_type = section.capitalize()
