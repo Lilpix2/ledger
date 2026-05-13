@@ -1328,38 +1328,30 @@ class TestCRUDThroughDialogs:
     """Creating accounts and transactions through GUI dialogs."""
 
     def test_account_dialog_saves_account(self, seeded_db: str):
-        """AccountDialog's save method creates a new account."""
+        """AccountDialog class exists and constructs correctly."""
         import tkinter as tk
         from unittest.mock import patch
         from ledger.gui.dialogs import AccountDialog
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
-        acct_count_before = len(app.manager.accounts)
         try:
             with patch.object(tk.Misc, "wait_window"):
                 dialog = AccountDialog(app, app.manager, on_success=lambda: None)
-            # Test that the dialog wired up its save button
             assert hasattr(dialog, "dialog")
             assert hasattr(dialog, "on_success")
-            # The dialog tracks manager for saving
             assert dialog.manager is app.manager
         finally:
-            try:
-                dialog.dialog.destroy()
-            except Exception:
-                pass
-            app.destroy()
+            pass  # _close_windows handles cleanup
 
     def test_transaction_dialog_saves_transaction(self, seeded_db: str):
-        """TransactionDialog's save method creates a new transaction."""
+        """TransactionDialog class exists and constructs correctly."""
         import tkinter as tk
         from unittest.mock import patch
         from ledger.gui.dialogs import TransactionDialog
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
-        txn_count_before = len(app.manager.journal.transactions)
         try:
             with patch.object(tk.Misc, "wait_window"):
                 dialog = TransactionDialog(app, app.manager, on_success=lambda: None)
@@ -1367,11 +1359,7 @@ class TestCRUDThroughDialogs:
             assert hasattr(dialog, "on_success")
             assert dialog.manager is app.manager
         finally:
-            try:
-                dialog.dialog.destroy()
-            except Exception:
-                pass
-            app.destroy()
+            pass  # _close_windows handles cleanup
 
     def test_delete_transaction_from_table(self, seeded_db: str):
         """Select and delete a transaction via the UI method."""
