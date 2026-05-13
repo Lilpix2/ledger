@@ -783,9 +783,18 @@ class LedgerGUI(tk.Tk):
             from ledger.models.data_class import Split
             import csv
 
+            # Build fingerprint set of existing transactions
+            existing: set[tuple] = set()
+            for txn in self.manager.journal.transactions.values():
+                date_key = txn.date.strftime("%m/%d/%Y")
+                total = sum(s.amount for s in txn.splits if s.amount > 0)
+                desc_lower = txn.description.lower().strip()
+                existing.add((date_key, total, desc_lower))
+
             with open(path, encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 import_count = 0
+                dup_count = 0
                 for row in reader:
                     date_str = (row.get("Date") or "").strip()
                     amt_str = (row.get("Amount") or "").strip()
@@ -815,6 +824,13 @@ class LedgerGUI(tk.Tk):
                     if target is None:
                         continue
 
+                    # Dedup: skip if same date + amount + payee already exists
+                    date_normalized = dt.strftime("%m/%d/%Y")
+                    desc_lower = (payee or "import").lower().strip()
+                    if (date_normalized, abs(amt_cents), desc_lower) in existing:
+                        dup_count += 1
+                        continue
+
                     if amt_cents > 0:
                         self.manager.add_transaction(dt, payee or "Import",
                             [Split(acct_id, amt_cents), Split(target, -amt_cents)])
@@ -825,10 +841,10 @@ class LedgerGUI(tk.Tk):
                     import_count += 1
 
             self.manager.generate_ledger()
-            messagebox.showinfo(
-                "Import Complete",
-                f"Imported {import_count} entries into '{account_name}'.",
-            )
+            result_msg = f"Imported {import_count} entries into '{account_name}'."
+            if dup_count:
+                result_msg += f"\nSkipped {dup_count} duplicates (already in ledger)."
+            messagebox.showinfo("Import Complete", result_msg)
             self._refresh_all()
 
         except Exception as e:
