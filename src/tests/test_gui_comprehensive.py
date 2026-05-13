@@ -624,32 +624,25 @@ class TestMenuBar:
 
     def test_report_menu_commands_fire(self, seeded_db: str):
         """Each report command opens a dialog with content."""
-        import tkinter.messagebox as mb
+        from ledger.gui import reports
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         try:
-            orig = mb.showinfo
-            shown = []
-
-            def fake(title, msg, **kw):
-                shown.append((title, msg))
-                return "ok"
-
-            mb.showinfo = fake
+            reports._captured_reports = []
             app._show_net_worth()
             app._show_summary()
             app._show_income_stmt()
             app._show_balance_sheet()
             app._show_re_statement()
-            mb.showinfo = orig
+            shown = reports._captured_reports
+            delattr(reports, '_captured_reports')
 
             assert len(shown) == 5, f"Expected 5 dialogs, got {len(shown)}"
             for title, msg in shown:
                 assert msg, f"Empty message for {title}"
                 assert "None" not in msg
         finally:
-            mb.showinfo = orig
             app.destroy()
 
 
@@ -693,19 +686,12 @@ class TestReportContent:
     """Report dialogs contain the expected information."""
 
     def test_net_worth_has_numbers(self, seeded_db: str):
-        import tkinter.messagebox as mb
+        from ledger.gui import reports
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         try:
-            orig = mb.showinfo
-            cap = []
-
-            def fake(title, msg, **kw):
-                cap.append((title, msg))
-                return "ok"
-
-            mb.showinfo = fake
+            reports._captured_reports = []
             app._show_net_worth()
             mb.showinfo = orig
 
@@ -718,19 +704,12 @@ class TestReportContent:
             app.destroy()
 
     def test_income_statement_has_breakdown(self, seeded_db: str):
-        import tkinter.messagebox as mb
+        from ledger.gui import reports
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         try:
-            orig = mb.showinfo
-            cap = []
-
-            def fake(title, msg, **kw):
-                cap.append((title, msg))
-                return "ok"
-
-            mb.showinfo = fake
+            reports._captured_reports = []
             app._show_income_stmt()
             mb.showinfo = orig
 
@@ -745,44 +724,27 @@ class TestReportContent:
             app.destroy()
 
     def test_balance_sheet_shows_all_assets(self, seeded_db: str):
-        import tkinter.messagebox as mb
+        from ledger.gui import reports
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         try:
-            orig = mb.showinfo
-            cap = []
-
-            def fake(title, msg, **kw):
-                cap.append((title, msg))
-                return "ok"
-
-            mb.showinfo = fake
+            reports._captured_reports = []
             app._show_balance_sheet()
-            mb.showinfo = orig
-
             _, msg = cap[0]
             assert "ASSETS" in msg and "LIABILITIES" in msg and "EQUITY" in msg
             assert "HS Checking" in msg
             assert "Discover" in msg
         finally:
-            mb.showinfo = orig
             app.destroy()
 
     def test_re_statement_dividend_line_present_if_applicable(self, seeded_db: str):
-        import tkinter.messagebox as mb
+        from ledger.gui import reports
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         try:
-            orig = mb.showinfo
-            cap = []
-
-            def fake(title, msg, **kw):
-                cap.append((title, msg))
-                return "ok"
-
-            mb.showinfo = fake
+            reports._captured_reports = []
             ids = {acct.name: aid for aid, acct in app.manager.accounts.items() if aid}
             app.manager.add_transaction(
                 datetime(2026, 7, 1), "Dividend paid",
@@ -799,26 +761,16 @@ class TestReportContent:
             app.destroy()
 
     def test_re_statement_no_dividend_line_when_none(self, seeded_db: str):
-        import tkinter.messagebox as mb
+        from ledger.gui import reports
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         try:
-            orig = mb.showinfo
-            cap = []
-
-            def fake(title, msg, **kw):
-                cap.append((title, msg))
-                return "ok"
-
-            mb.showinfo = fake
+            reports._captured_reports = []
             app._show_re_statement()
-            mb.showinfo = orig
-
             _, msg = cap[0]
             assert "Dividend" not in msg
         finally:
-            mb.showinfo = orig
             app.destroy()
 
 
@@ -1047,19 +999,12 @@ class TestHelpMenu:
 
     def test_about_dialog_opens(self, seeded_db: str):
         """About dialog shows app info."""
-        import tkinter.messagebox as mb
+        from ledger.gui import reports
         from ledger.gui_app import LedgerGUI
 
         app = LedgerGUI(db_path=seeded_db)
         try:
-            orig = mb.showinfo
-            cap = []
-
-            def fake(title, msg, **kw):
-                cap.append((title, msg))
-                return "ok"
-
-            mb.showinfo = fake
+            reports._captured_reports = []
             app._show_about()
             mb.showinfo = orig
 
