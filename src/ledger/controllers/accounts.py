@@ -821,14 +821,10 @@ class AccountManager:
             ``balanced`` (bool),
             ``total_liabilities_equity`` (int)
         """
-        # Collect leaf accounts (skip parent categories to avoid double-count).
-        tree = self.build_tree()
-        leaf_ids = set()
-        for pid, children in tree.items():
-            for cid in children:
-                if cid not in tree:
-                    leaf_ids.add(cid)
-
+        # NOTE: generate_ledger() assigns balances per account from
+        # direct splits only — parents do NOT auto-sum children.
+        # So showing ALL accounts with non-zero balance is correct
+        # (no double-counting risk).
         asset_ids = self.get_descendant_ids(1)
         liability_ids = self.get_descendant_ids(2)
         equity_ids = self.get_descendant_ids(3)
@@ -845,8 +841,6 @@ class AccountManager:
 
         # Assets: contra accounts subtract, normal add
         for aid in sorted(asset_ids):
-            if aid not in leaf_ids and aid != 0:
-                continue
             if aid in div_ids:
                 continue
             raw = self.accounts[aid].get_balance()
@@ -868,8 +862,6 @@ class AccountManager:
 
         # Liabilities: credit-normal, flip raw
         for aid in sorted(liability_ids):
-            if aid not in leaf_ids and aid != 0:
-                continue
             raw = self.accounts[aid].get_balance()
             if raw == 0:
                 continue
@@ -880,8 +872,6 @@ class AccountManager:
         # Equity: use computed Retained Earnings instead of ledger balance
         re_shown = False
         for aid in sorted(equity_ids):
-            if aid not in leaf_ids and aid != 0:
-                continue
             if aid == 6:
                 if computed_re != 0:
                     e_items.append(("retained earnings", computed_re))
