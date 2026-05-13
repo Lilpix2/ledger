@@ -1601,24 +1601,23 @@ class TestCRUDThroughDialogs:
                 return
 
             try:
-                # ── Find and check the cascade checkbox ────
-                def _walk(p):
+                # ── Find all cascade checkboxes and check them ──
+                # "Delete children too" + "Delete transactions too"
+                def _find_all_checkbuttons(p, results):
                     for c in p.winfo_children():
                         if isinstance(c, ttk.Checkbutton):
                             try:
                                 txt = c.cget("text")
-                                if "children" in txt.lower() or "delete" in txt.lower():
-                                    return c
+                                if "delete" in txt.lower():
+                                    results.append(c)
                             except tk.TclError:
                                 pass
-                        result = _walk(c)
-                        if result:
-                            return result
-                    return None
+                        _find_all_checkbuttons(c, results)
+                    return results
 
-                cascade_cb = _walk(dlg)
-                if cascade_cb:
-                    cascade_cb.invoke()  # Check it
+                checkbuttons = _find_all_checkbuttons(dlg, [])
+                for cb in checkbuttons:
+                    cb.invoke()  # Check every "Delete ... too" checkbox
 
                 # ── Click Delete ───────────────────────────
                 def _find_btn(win):
