@@ -138,7 +138,7 @@ class DatabaseController:
         """Reparent all direct children of *old_parent_id* to *new_parent_id*."""
         with self._connect() as conn:
             conn.execute(
-                "UPDATE accounts SET parent = ? WHERE parent = ?",
+                "UPDATE accounts SET parent_id = ? WHERE parent_id = ?",
                 (new_parent_id, old_parent_id),
             )
 

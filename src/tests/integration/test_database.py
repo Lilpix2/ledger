@@ -737,3 +737,123 @@ class TestDatabaseEdgeCases:
         finally:
             _cleanup_path(path_a)
             _cleanup_path(path_b)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Reassign / Reparent (delete-account helpers)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDatabaseReassignReparent:
+    """DB-level split migration and child reparenting."""
+
+    def test_reassignSplitsInDb_movesAllSplits(self):
+        """All split rows referencing source_id are moved to target_id."""
+        db = _fresh_db()
+        try:
+            src = db.save_account("Src", None, "ASSET", False, None)
+            tgt = db.save_account("Tgt", None, "ASSET", False, None)
+            other = db.save_account("Other", None, "LIABILITY", False, None)
+            db.save_transaction(
+                _ts("2026-06-01"), "Txn 1",
+                [Split(src, 5000), Split(other, -5000)],
+            )
+            db.save_transaction(
+                _ts("2026-06-02"), "Txn 2",
+                [Split(src, 3000), Split(other, -3000)],
+            )
+
+            db.reassign_splits_in_db(src, tgt)
+
+            conn = db._connect()
+            rows = conn.execute(
+                "SELECT account_id FROM split"
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                assert r["account_id"] in (tgt, other), (
+                    f"Unexpected account_id {r['account_id']}"
+                )
+        finally:
+            _cleanup(db)
+
+    def test_reassignSplitsInDb_noMatch_noop(self):
+        """reassign_splits_in_db with no matching splits is a no-op."""
+        db = _fresh_db()
+        try:
+            a = db.save_account("A", None, "ASSET", False, None)
+            b = db.save_account("B", None, "LIABILITY", False, None)
+            db.save_transaction(
+                _ts("2026-06-01"), "Test",
+                [Split(a, 1000), Split(b, -1000)],
+            )
+            db.reassign_splits_in_db(99999, a)
+            conn = db._connect()
+            rows = conn.execute("SELECT account_id FROM split").fetchall()
+            conn.close()
+            assert all(r["account_id"] in (a, b) for r in rows)
+        finally:
+            _cleanup(db)
+
+    def test_reassignSplitsInDb_self_noop(self):
+        """Reassigning splits to the same account leaves them intact."""
+        db = _fresh_db()
+        try:
+            a = db.save_account("A", None, "ASSET", False, None)
+            b = db.save_account("B", None, "LIABILITY", False, None)
+            db.save_transaction(
+                _ts("2026-06-01"), "Test",
+                [Split(a, 1000), Split(b, -1000)],
+            )
+            db.reassign_splits_in_db(a, a)
+            conn = db._connect()
+            count = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM split WHERE account_id=?", (a,)
+            ).fetchone()["cnt"]
+            conn.close()
+            assert count == 1
+        finally:
+            _cleanup(db)
+
+    def test_reparentChildrenInDb_movesAllChildren(self):
+        """All accounts with old_parent_id are reparented."""
+        db = _fresh_db()
+        try:
+            old = db.save_account("OldP", None, "ASSET", False, None)
+            new = db.save_account("NewP", None, "ASSET", False, None)
+            c1 = db.save_account("Child1", old, "ASSET", False, None)
+            c2 = db.save_account("Child2", old, "ASSET", False, None)
+            db.reparent_children_in_db(old, new)
+            rows = db.load_accounts()
+            for r in rows:
+                if r[1] in ("Child1", "Child2"):
+                    assert r[2] == new, f"{r[1]} parent is {r[2]}, expected {new}"
+        finally:
+            _cleanup(db)
+
+    def test_reparentChildrenInDb_noChildren_noop(self):
+        """reparent_children_in_db with no matches does not raise."""
+        db = _fresh_db()
+        try:
+            old = db.save_account("OldP", None, "ASSET", False, None)
+            new = db.save_account("NewP", None, "ASSET", False, None)
+            db.reparent_children_in_db(old, new)
+            assert len(db.load_accounts()) == 2
+        finally:
+            _cleanup(db)
+
+    def test_reparentThenDelete_preservesChildren(self):
+        """After reparenting, deleting old parent leaves children under new."""
+        db = _fresh_db()
+        try:
+            old = db.save_account("OldP", None, "ASSET", False, None)
+            new = db.save_account("NewP", None, "ASSET", False, None)
+            child = db.save_account("Child", old, "ASSET", False, None)
+            db.reparent_children_in_db(old, new)
+            db.delete_account(old)
+            names = {r[1] for r in db.load_accounts()}
+            assert "NewP" in names
+            assert "Child" in names
+            assert "OldP" not in names
+        finally:
+            _cleanup(db)
