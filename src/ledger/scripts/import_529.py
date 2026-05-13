@@ -94,14 +94,20 @@ def import_529(qif_path: str, db_path: str = DEFAULT_DB,
             f["divs"] += 1
 
         elif r.check_num == "ShrsOut":
-            # Treat like a sell — reduce shares + cost pro-rata
-            old_shares = f["net_shares"]
-            old_cost = f["total_cost_cents"]
-            if old_shares > 0:
-                fraction = q / (old_shares + q)
-                removed = int(round(old_cost * fraction))
-                f["total_cost_cents"] -= min(removed, old_cost)
-            f["net_shares"] -= q
+            if q == 0:
+                # Age-based rollover or system conversion: fund is closed,
+                # value moved to a new year's fund via ShrsIn.
+                f["net_shares"] = 0.0
+                f["total_cost_cents"] = 0
+            else:
+                # Actual shares removed (transfer, fee, etc.)
+                old_shares = f["net_shares"]
+                old_cost = f["total_cost_cents"]
+                if old_shares > 0:
+                    fraction = q / (old_shares + q)
+                    removed = int(round(old_cost * fraction))
+                    f["total_cost_cents"] -= min(removed, old_cost)
+                f["net_shares"] -= q
             f["sells"] += 1
 
     summary = {
