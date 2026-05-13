@@ -1443,17 +1443,16 @@ class TestCRUDThroughDialogs:
 
         app, parent, child, child_target, txn_target, _ = self._prepare_delete_app(seeded_db)
         try:
-            # ── Intercept confirmation ─────────────────────────
             import tkinter.messagebox as mb
             orig_ask = mb.askyesno
+            orig_error = mb.showerror
+            errors_seen: list[str] = []
             mb.askyesno = lambda title, msg, **kw: True
+            mb.showerror = lambda title, msg, **kw: errors_seen.append(msg)
 
-            # ── Open the dialog (patch wait_window so it returns immediately) ──
             with patch.object(tk.Misc, "wait_window"):
                 app._dialog_delete_account(parent)
 
-            # The dialog was created with wait_window patched — it's now
-            # shown and we can interact with its widgets. Find it.
             dlg = None
             for w in app.winfo_children():
                 if isinstance(w, tk.Toplevel):
@@ -1465,77 +1464,61 @@ class TestCRUDThroughDialogs:
                         pass
 
             if dlg is None:
-                # Dialog may have already been handled (simple path)
-                # Check if account was deleted
-                if parent not in app.manager.accounts:
-                    # The simple path handled it — nothing more to test
-                    mb.askyesno = orig_ask
-                    return
-
                 mb.askyesno = orig_ask
-                return
+                mb.showerror = orig_error
+                if errors_seen:
+                    pytest.fail(f"showerror during dialog init: {errors_seen}")
+                if parent not in app.manager.accounts:
+                    return  # dialog took simple path, nothing to interact with
+                pytest.fail("Dialog opened but Toplevel not found")
 
             try:
-                # ── Helper: find first combo in a LabelFrame ──
-                def _find_combo(win, section_text):
-                    """Walk widget tree to find first Combobox inside a LabelFrame."""
-                    def _walk(p):
-                        for c in p.winfo_children():
-                            if isinstance(c, ttk.LabelFrame):
-                                try:
-                                    if c.cget("text") == section_text:
-                                        for inner in c.winfo_children():
-                                            if isinstance(inner, ttk.Combobox):
-                                                return inner
-                                            for sub in inner.winfo_children():
-                                                if isinstance(sub, ttk.Combobox):
-                                                    return sub
-                                except tk.TclError:
-                                    pass
-                            result = _walk(c)
-                            if result:
-                                return result
-                        return None
-                    return _walk(win)
+                # ── Helper: find all widgets recursively ──
+                def _walk(p, klass):
+                    for c in p.winfo_children():
+                        if isinstance(c, klass):
+                            yield c
+                        yield from _walk(c, klass)
 
-                # ── Set child reassignment ─────────────────────
-                child_combo = _find_combo(dlg, "Sub-accounts")
-                if child_combo:
-                    choices = list(child_combo.cget("values"))
-                    target_label = next(
-                        (c for c in choices if "ChildTarget" in c), None
-                    )
-                    if target_label:
-                        child_combo.set(target_label)
-
-                # ── Set transaction reassignment ───────────────
-                txn_combo = _find_combo(dlg, "Transactions")
-                if txn_combo:
-                    choices = list(txn_combo.cget("values"))
-                    target_label = next(
-                        (c for c in choices if "TxnTarget" in c), None
-                    )
-                    if target_label:
-                        txn_combo.set(target_label)
-
-                # ── Click Delete Account ───────────────────────
-                # Find the Delete Account button by text
-                def _find_btn(win):
-                    for w in win.winfo_children():
-                        if isinstance(w, ttk.Button):
-                            try:
-                                if w.cget("text") == "Delete Account":
-                                    return w
-                            except tk.TclError:
-                                pass
-                        result = _find_btn(w)
-                        if result:
-                            return result
+                def _find_in_label_frame(win, section, klass):
+                    """Find a widget inside a LabelFrame by section title."""
+                    for w in _walk(win, ttk.LabelFrame):
+                        try:
+                            if w.cget("text") == section:
+                                for child in _walk(w, klass):
+                                    return child
+                        except tk.TclError:
+                            pass
                     return None
 
-                delete_btn = _find_btn(dlg)
+                # ── Set child reassignment ─────────────────────
+                child_combo = _find_in_label_frame(dlg, "Sub-accounts", ttk.Combobox)
+                if child_combo:
+                    choices = list(child_combo.cget("values"))
+                    target = next((c for c in choices if "ChildTarget" in c), None)
+                    if target:
+                        child_combo.set(target)
+
+                # ── Set transaction reassignment ───────────────
+                txn_combo = _find_in_label_frame(dlg, "Transactions", ttk.Combobox)
+                if txn_combo:
+                    choices = list(txn_combo.cget("values"))
+                    target = next((c for c in choices if "TxnTarget" in c), None)
+                    if target:
+                        txn_combo.set(target)
+
+                # ── Find and click Delete Account ───────────────
+                delete_btn = _find_in_label_frame(dlg, "", ttk.Button) or next(
+                    (w for w in _walk(dlg, ttk.Button)
+                     if str(w.cget("text")) == "Delete Account"),
+                    None,
+                )
                 assert delete_btn is not None, "Delete Account button not found"
                 delete_btn.invoke()
+
+                # ── Check for validation errors first ──
+                if errors_seen:
+                    pytest.fail(f"Validation failed: {errors_seen}")
 
                 # ── Assert: account gone, children + txns reassigned ──
                 assert parent not in app.manager.accounts, "DeleteMe should be gone"
@@ -1558,8 +1541,12 @@ class TestCRUDThroughDialogs:
                 )
 
             finally:
-                dlg.destroy()
+                try:
+                    dlg.destroy()
+                except Exception:
+                    pass
                 mb.askyesno = orig_ask
+                mb.showerror = orig_error
         finally:
             app.destroy()
 
@@ -1575,7 +1562,10 @@ class TestCRUDThroughDialogs:
         try:
             import tkinter.messagebox as mb
             orig_ask = mb.askyesno
+            orig_error = mb.showerror
+            errors_seen: list[str] = []
             mb.askyesno = lambda title, msg, **kw: True
+            mb.showerror = lambda title, msg, **kw: errors_seen.append(msg)
 
             with patch.object(tk.Misc, "wait_window"):
                 app._dialog_delete_account(parent)
@@ -1592,6 +1582,9 @@ class TestCRUDThroughDialogs:
 
             if dlg is None:
                 mb.askyesno = orig_ask
+                mb.showerror = orig_error
+                if errors_seen:
+                    pytest.fail(f"showerror during cascade init: {errors_seen}")
                 return
 
             try:
@@ -1641,6 +1634,7 @@ class TestCRUDThroughDialogs:
                 except Exception:
                     pass
                 mb.askyesno = orig_ask
+                mb.showerror = orig_error
         finally:
             app.destroy()
 
@@ -1717,5 +1711,118 @@ class TestEquationAfterOperations:
 
             t = app.status_var.get()
             assert "✓" in t, f"Status not balanced after mixed txn: {t}"
+        finally:
+            app.destroy()
+
+# ════════════════════════════════════════════════════════════════════
+#  DELETE ACCOUNT — DIRECT BACKEND (E2E via app)
+# ════════════════════════════════════════════════════════════════════
+
+
+@no_display
+class TestDeleteAccountBackend:
+    """Delete account flow tested through the app's manager directly."""
+
+    def test_reassign_children_then_delete(self, seeded_db: str):
+        """Reassign children via backend, then delete the now-empty parent."""
+        from ledger.gui_app import LedgerGUI
+        from datetime import datetime
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            parent = app.manager.add_account("Parent", 1)
+            child = app.manager.add_account("Child", parent)
+            target = app.manager.add_account("Target", 1)
+
+            app.manager.reassign_children(parent, target)
+            app.manager.delete_account(parent)
+
+            assert parent not in app.manager.accounts
+            assert child in app.manager.accounts
+            assert app.manager.accounts[child].parent == target
+            eq = app.manager.check_accounting_equation()
+            assert eq["balanced"]
+        finally:
+            app.destroy()
+
+    def test_reassign_transactions_then_delete(self, seeded_db: str):
+        """Reassign transactions via backend, then delete the source."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            source = app.manager.add_account("Source", 1)
+            target = app.manager.add_account("Target", 1)
+            wages = next(
+                (aid for aid, a in app.manager.accounts.items()
+                 if a.name == "Wages"),
+                None,
+            )
+
+            app.manager.add_transaction(
+                datetime(2026, 8, 1), "Fund source",
+                [Split(source, 75000), Split(wages, -75000)],
+            )
+            app.manager.generate_ledger()
+
+            app.manager.reassign_transactions(source, target)
+            app.manager.generate_ledger()
+            app.manager.delete_account(source)
+
+            assert source not in app.manager.accounts
+            assert target in app.manager.accounts
+            assert app.manager.get_display_balance(target) == 75000
+            eq = app.manager.check_accounting_equation()
+            assert eq["balanced"]
+        finally:
+            app.destroy()
+
+    def test_cascade_delete_account_with_children(self, seeded_db: str):
+        """Cascade delete: parent + children both removed."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            parent = app.manager.add_account("Parent", 1)
+            child = app.manager.add_account("Child", parent)
+
+            app.manager.delete_account(parent)
+
+            assert parent not in app.manager.accounts
+            assert child not in app.manager.accounts
+            eq = app.manager.check_accounting_equation()
+            assert eq["balanced"]
+        finally:
+            app.destroy()
+
+    def test_cascade_delete_account_with_transactions(self, seeded_db: str):
+        """Cascade delete: account + its transactions removed."""
+        from ledger.gui_app import LedgerGUI
+
+        app = LedgerGUI(db_path=seeded_db)
+        try:
+            src = app.manager.add_account("Src", 1)
+            wages = next(
+                (aid for aid, a in app.manager.accounts.items()
+                 if a.name == "Wages"),
+                None,
+            )
+
+            app.manager.add_transaction(
+                datetime(2026, 8, 1), "Wages funding",
+                [Split(src, 44000), Split(wages, -44000)],
+            )
+            app.manager.generate_ledger()
+
+            before = len(app.manager.journal.transactions)
+            app.manager.delete_account(src)
+            after = len(app.manager.journal.transactions)
+
+            assert src not in app.manager.accounts
+            assert after < before, "Transactions not removed by cascade"
+            # The txn was deleted, so wages balance should be 0
+            assert app.manager.get_display_balance(wages) == 0
+            eq = app.manager.check_accounting_equation()
+            assert eq["balanced"]
         finally:
             app.destroy()
