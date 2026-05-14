@@ -386,7 +386,8 @@ class LedgerGUI(QMainWindow):
         reports_mod.show_about(self)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Launch the PySide6 ledger GUI."""
     import sys
     import os
     from PySide6.QtWidgets import QApplication
@@ -398,3 +399,7 @@ if __name__ == "__main__":
     window = LedgerGUI(manager)
     window.show()
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

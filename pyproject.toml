@@ -5,7 +5,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-ledger = "ledger.gui_app:main"
+ledger = "ledger.gui_pyside.gui_app_pyside:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

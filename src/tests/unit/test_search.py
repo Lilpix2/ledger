@@ -11,8 +11,12 @@ Filters compose with each other and with the existing account-tree filter.
 from datetime import datetime
 import pytest
 
+from datetime import datetime
+import pytest
+
 from ledger.controllers.accounts import AccountManager
 from ledger.models.data_class import Split
+from tests.conftest import MockDB
 
 
 # ── Helper ─────────────────────────────────────────────────────────
@@ -71,10 +75,7 @@ def _filter_txns(
 def search_fixture() -> AccountManager:
     """A manager with transactions that have varied descriptions, dates,
     and amounts — useful for testing each filter dimension."""
-    import tempfile, os
-    path = tempfile.mktemp(suffix=".db")
-    mgr = AccountManager(path)
-    mgr._db_path = path
+    mgr = AccountManager(db=MockDB())
 
     checking = mgr.add_account("Checking", 1)
     food = mgr.add_account("Food", 5)
@@ -111,12 +112,7 @@ def search_fixture() -> AccountManager:
     )
 
     mgr.generate_ledger()
-    yield mgr
-
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
+    return mgr
 
 
 # ── Description search ─────────────────────────────────────────────
@@ -287,12 +283,6 @@ class TestCombinedFilters:
 
     def test_empty_journal(self):
         """Filtering an empty journal returns empty list."""
-        import tempfile, os
-        path = tempfile.mktemp(suffix=".db")
-        mgr = AccountManager(path)
+        mgr = AccountManager(db=MockDB())
         ids = _filter_txns(mgr, search_text="anything")
         assert ids == []
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
