@@ -660,7 +660,7 @@ class LedgerGUI(QMainWindow):
 
     def _delete_transaction(self) -> None:
         tid = self.selected_txn_id
-        if tid is None:
+        if tid is None or tid not in self._manager.journal.transactions:
             return
         from PySide6.QtWidgets import QMessageBox
         reply = QMessageBox.question(

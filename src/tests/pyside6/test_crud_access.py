@@ -494,6 +494,33 @@ class TestTransactionTableContextMenu:
         finally:
             window.close()
 
+    def test_delete_stale_transaction_id_graceful(self, qt_app, fast_seeded):
+        """_delete_transaction handles stale IDs without crashing."""
+        window = LedgerGUI(fast_seeded)
+        window.show()
+        QApplication.processEvents()
+
+        try:
+            table = window.findChild(QTableView, "transactionTable")
+            table.selectRow(0)
+            QApplication.processEvents()
+
+            # Get the selected txn id
+            tid = window.selected_txn_id
+            assert tid is not None
+
+            # Delete it directly from the manager (simulating stale state)
+            window._manager.delete_transaction(tid)
+
+            # Now try to delete through GUI — should not crash
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+                window._delete_transaction()
+                QApplication.processEvents()
+
+            # No crash = pass
+        finally:
+            window.close()
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  Menu bar — Edit/Delete actions
