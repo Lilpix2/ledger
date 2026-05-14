@@ -24,12 +24,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPoint
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenuBar,
-    QPushButton, QSplitter, QStatusBar, QTabWidget, QTableView,
-    QTreeView, QVBoxLayout, QWidget,
+    QComboBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
+    QMenuBar, QPushButton, QSplitter, QStatusBar, QTabWidget,
+    QTableView, QTreeView, QVBoxLayout, QWidget,
 )
 
 from ledger.controllers.accounts import AccountManager
@@ -47,6 +47,7 @@ class LedgerTableModel(QAbstractTableModel):
         super().__init__(parent)
         self._manager = manager
         self._transactions: list[tuple[str, str, str]] = []
+        self._txn_ids: list[int] = []
         self._filters: dict[str, Any] = {}
 
     def set_filters(self, **kwargs: Any) -> None:
@@ -63,7 +64,15 @@ class LedgerTableModel(QAbstractTableModel):
                 txn.description[:60],
                 format_cents(total),
             ))
+            self._txn_ids.append(txn_id)
+        self._txn_ids = self._txn_ids[:len(self._transactions)]
         self.endResetModel()
+
+    def txn_id_at_row(self, row: int) -> int | None:
+        """Return the transaction ID for a given table row, or None."""
+        if 0 <= row < len(self._txn_ids):
+            return self._txn_ids[row]
+        return None
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return len(self._transactions)
@@ -239,13 +248,21 @@ class LedgerGUI(QMainWindow):
 
         # ── Accounts ──
         accounts_menu = menubar.addMenu("Accounts")
-        new_acct_action = accounts_menu.addAction("New Account…")
-        new_acct_action.triggered.connect(lambda: self._on_toolbar("New Account"))
+        self._act_new_account = accounts_menu.addAction("New Account…")
+        self._act_new_account.triggered.connect(lambda: self._on_toolbar("New Account"))
+        self._act_edit_account = accounts_menu.addAction("Edit Account…")
+        self._act_edit_account.triggered.connect(self._edit_account)
+        self._act_delete_account = accounts_menu.addAction("Delete Account…")
+        self._act_delete_account.triggered.connect(self._delete_account)
 
         # ── Transactions ──
         txn_menu = menubar.addMenu("Transactions")
-        new_txn_action = txn_menu.addAction("New Transaction…")
-        new_txn_action.triggered.connect(lambda: self._on_toolbar("New Transaction"))
+        self._act_new_txn = txn_menu.addAction("New Transaction…")
+        self._act_new_txn.triggered.connect(lambda: self._on_toolbar("New Transaction"))
+        self._act_edit_txn = txn_menu.addAction("Edit Transaction…")
+        self._act_edit_txn.triggered.connect(self._edit_transaction)
+        self._act_delete_txn = txn_menu.addAction("Delete Transaction…")
+        self._act_delete_txn.triggered.connect(self._delete_transaction)
         txn_menu.addSeparator()
 
         inc_stmt = txn_menu.addAction("Income Statement")
@@ -315,6 +332,8 @@ class LedgerGUI(QMainWindow):
         # Account tree
         self._tree = QTreeView()
         self._tree.setObjectName("accountTree")
+        self._tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._show_account_context_menu)
         self._tree_model = self._build_tree_model()
         self._tree.setModel(self._tree_model)
         splitter.addWidget(self._tree)
@@ -322,6 +341,8 @@ class LedgerGUI(QMainWindow):
         # Transaction table
         self._table = QTableView()
         self._table.setObjectName("transactionTable")
+        self._table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_txn_context_menu)
         self._table_model = LedgerTableModel(self._manager)
         self._table_model.refresh()
         self._table.setModel(self._table_model)
@@ -439,6 +460,127 @@ class LedgerGUI(QMainWindow):
         self._port_summary.setText(
             f"Total Market Value: {format_cents(total_mv)}"
         )
+
+    # ── Account selection helpers ────────────────────────────
+
+    @property
+    def selected_account_id(self) -> int | None:
+        """The account ID of the currently selected tree item, or None."""
+        indexes = self._tree.selectedIndexes()
+        if not indexes:
+            return None
+        idx = indexes[0]
+        # Map the model index back to account ID via the tree model data
+        # The tree model stores "AccountName (TYPE)" — look up by name
+        from PySide6.QtGui import QStandardItemModel
+        model = self._tree.model()
+        if not isinstance(model, QStandardItemModel):
+            return None
+        item = model.itemFromIndex(idx)
+        if item is None:
+            return None
+        display_text = item.text()
+        # Extract the account name from "name (TYPE)"
+        name = display_text.rsplit(" (", 1)[0] if " (" in display_text else display_text
+        for aid, acct in self._manager.accounts.items():
+            if acct.name == name:
+                return aid
+        return None
+
+    @property
+    def selected_txn_id(self) -> int | None:
+        """The transaction ID of the currently selected table row, or None."""
+        indexes = self._table.selectedIndexes()
+        if not indexes:
+            return None
+        row = indexes[0].row()
+        return self._table_model.txn_id_at_row(row)
+
+    # ── Account context menu ────────────────────────────────
+
+    def _show_account_context_menu(self, pos: QPoint) -> None:
+        menu = self._build_account_context_menu()
+        if menu:
+            menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    def _build_account_context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        edit_action = menu.addAction("Edit Account…")
+        edit_action.triggered.connect(self._edit_account)
+        del_action = menu.addAction("Delete Account…")
+        del_action.triggered.connect(self._delete_account)
+        # Disable if nothing selected
+        if self.selected_account_id is None:
+            edit_action.setEnabled(False)
+            del_action.setEnabled(False)
+        return menu
+
+    def _edit_account(self) -> None:
+        aid = self.selected_account_id
+        if aid is None:
+            return
+        from ledger.gui_pyside.dialogs import AccountDialog
+        dlg = AccountDialog(
+            self._manager, self._on_dialog_success,
+            edit_acct=self._manager.accounts.get(aid),
+            edit_acct_id=aid,
+        )
+        dlg.exec()
+
+    def _delete_account(self) -> None:
+        aid = self.selected_account_id
+        if aid is None:
+            return
+        from ledger.gui_pyside.dialogs import DeleteAccountDialog
+        dlg = DeleteAccountDialog(self._manager, aid, self._on_dialog_success)
+        dlg.exec()
+
+    # ── Transaction context menu ────────────────────────────
+
+    def _show_txn_context_menu(self, pos: QPoint) -> None:
+        menu = self._build_txn_context_menu()
+        if menu:
+            menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _build_txn_context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        edit_action = menu.addAction("Edit Transaction…")
+        edit_action.triggered.connect(self._edit_transaction)
+        del_action = menu.addAction("Delete Transaction…")
+        del_action.triggered.connect(self._delete_transaction)
+        if self.selected_txn_id is None:
+            edit_action.setEnabled(False)
+            del_action.setEnabled(False)
+        return menu
+
+    def _edit_transaction(self) -> None:
+        tid = self.selected_txn_id
+        if tid is None or tid not in self._manager.journal.transactions:
+            return
+        from ledger.gui_pyside.dialogs import TransactionDialog
+        txn = self._manager.journal.transactions[tid]
+        dlg = TransactionDialog(
+            self._manager, self._on_dialog_success,
+            edit_txn=txn, edit_txn_id=tid,
+        )
+        dlg.exec()
+
+    def _delete_transaction(self) -> None:
+        tid = self.selected_txn_id
+        if tid is None:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Delete Transaction",
+            "Delete this transaction?\n\nThis cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._manager.delete_transaction(tid)
+            self._manager.generate_ledger()
+            self._refresh_all_internal()
+            self._table_model.refresh()
 
     def _close_month(self) -> None:
         """Close temporary accounts for the month.
