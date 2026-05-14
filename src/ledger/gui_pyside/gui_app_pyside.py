@@ -175,6 +175,8 @@ class LedgerGUI(QMainWindow):
         file_menu = menubar.addMenu("File")
         refresh_action = file_menu.addAction("Refresh")
         refresh_action.triggered.connect(lambda: self._on_toolbar("Refresh"))
+        close_month_action = file_menu.addAction("Close Month…")
+        close_month_action.triggered.connect(self._close_month)
         file_menu.addSeparator()
         quit_action = file_menu.addAction("Quit")
         quit_action.triggered.connect(self.close)
@@ -327,6 +329,32 @@ class LedgerGUI(QMainWindow):
         self._port_summary.setText(
             f"Total Market Value: {format_cents(total_mv)}"
         )
+
+    def _close_month(self) -> None:
+        """Close temporary accounts for the month.
+
+        Prompts for confirmation, then calls close_temps() on the backend
+        and refreshes the UI.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        reply = QMessageBox.question(
+            self, "Close Month",
+            "Close temporary accounts for this month?\n\n"
+            "Income and expense accounts will be zeroed and "
+            "their balances transferred to Retained Earnings.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._manager.close_temps()
+            self._manager.generate_ledger()
+            self._refresh_all_internal()
+            eq = self._manager.check_accounting_equation()
+            if eq["balanced"]:
+                self._status.showMessage("✓ Month closed — Balanced")
+            else:
+                self._status.showMessage(f"✗ Unbalanced: {eq}")
 
     def _on_toolbar(self, action: str) -> None:
         if action == "New Account":

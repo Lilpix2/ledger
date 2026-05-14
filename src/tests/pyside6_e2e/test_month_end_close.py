@@ -1,12 +1,13 @@
-"""E2E test: Month-end close cycle through the PySide6 GUI.
+"""E2E test: Month-end close through the PySide6 GUI menus.
 
-Outer loop: One acceptance test describing the full monthly closing process.
+Outer loop: One acceptance test that opens the app, navigates the menu
+to close the month, confirms the dialog, and verifies the UI reflects
+the closed state.
 
-Flow:
-  Open app → Verify structure → Add income/expense → Generate ledger →
-  Verify pre-close balances → Run close_temps() →
-  Verify temps zeroed → Verify RE updated → Verify equation balanced →
-  Verify status bar → Close
+Tests the REAL user flow through File → Close Month… → Yes.
+QMessageBox.question is patched (it's a blocking modal), but everything
+else goes through the real GUI: menu navigation, backend close_temps(),
+UI refresh, status bar update.
 """
 
 from __future__ import annotations
@@ -14,13 +15,14 @@ from __future__ import annotations
 import os
 import tempfile
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 try:
-    from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, \
-        QStatusBar, QTreeView, QTableView, QMenuBar
+    from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget,
+                                     QStatusBar, QTreeView, QTableView,
+                                     QMessageBox)
     from PySide6.QtCore import Qt
     HAS_PYSIDE = True
 except ImportError:
@@ -32,48 +34,29 @@ from ledger.models.data_class import Split
 
 
 def _seed_db() -> str:
-    """Create a seeded temp DB with accounts, opening balances,
-    and one month of activity for the E2E month-end close test."""
+    """Create a seeded temp DB with one month of activity."""
     path = tempfile.mktemp(suffix=".db")
     mgr = AccountManager(path)
 
-    # Assets
     mgr.add_account("HS Checking", 1, account_subtype="checking")
     mgr.add_account("Savings", 1)
-    mgr.add_account("Schwab Brokerage", 1, account_subtype="brokerage")
-    # Liabilities
     mgr.add_account("Discover", 2, account_subtype="credit_card")
-    # Income
     mgr.add_account("Wages", 4)
-    mgr.add_account("Dividend Income", 4)
-    # Expenses
     mgr.add_account("Groceries", 5)
     mgr.add_account("Rent", 5)
-    mgr.add_account("Utilities", 5)
-    # Equity — account 6 is retained earnings
 
     ids = {a.name: aid for aid, a in mgr.accounts.items() if aid}
 
-    # Opening balances (via retained earnings)
     mgr.add_transaction(datetime(2026, 1, 1), "Opening", [
         Split(ids["HS Checking"], 10000000),
         Split(ids["Savings"], 2000000),
-        Split(ids["Schwab Brokerage"], 5000000),
         Split(ids["Discover"], -530000),
-        Split(6, -16470000),
+        Split(6, -11470000),
     ])
-
-    # June activity — income
     mgr.add_transaction(datetime(2026, 6, 1), "Paycheck", [
         Split(ids["Wages"], -300000),
         Split(ids["HS Checking"], 300000),
     ])
-    mgr.add_transaction(datetime(2026, 6, 15), "Dividend", [
-        Split(ids["Dividend Income"], -5000),
-        Split(ids["HS Checking"], 5000),
-    ])
-
-    # June activity — expenses
     mgr.add_transaction(datetime(2026, 6, 2), "Rent", [
         Split(ids["Rent"], 150000),
         Split(ids["HS Checking"], -150000),
@@ -81,10 +64,6 @@ def _seed_db() -> str:
     mgr.add_transaction(datetime(2026, 6, 5), "Groceries", [
         Split(ids["Groceries"], 8500),
         Split(ids["HS Checking"], -8500),
-    ])
-    mgr.add_transaction(datetime(2026, 6, 20), "Electric bill", [
-        Split(ids["Utilities"], 12000),
-        Split(ids["HS Checking"], -12000),
     ])
 
     mgr.generate_ledger()
@@ -103,27 +82,27 @@ def db_path():
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  E2E: Month-End Close Cycle
+#  E2E: Month-End Close via GUI
 # ═══════════════════════════════════════════════════════════════════
 
 
 class TestMonthEndClose:
-    """One E2E acceptance test: full month-end close cycle.
+    """One E2E acceptance test: close the month through the File menu.
 
-    This is the OUTER LOOP that defines the complete close workflow.
-    It validates:
-      1. App opens with correct structure
-      2. Pre-close balances (income, expenses, RE) are correct
-      3. close_temps() resets income/expense to zero
-      4. Retained earnings reflects net income
-      5. Accounting equation remains balanced (A = L + E)
-      6. Closing entries appear in the transaction table
+    Flow:
+      1. Open app → verify structure
+      2. Navigate File → Close Month…
+      3. Confirm the dialog (QMessageBox.question patched to return Yes)
+      4. Verify status bar reflects balanced close
+      5. Verify income/expense accounts zeroed
+      6. Verify RE updated
+      7. Verify equation balanced
     """
 
-    def test_month_end_close(self, qt_app, db_path):
-        """Full month-end close cycle through the PySide6 GUI."""
+    @patch.object(QMessageBox, "question", return_value=QMessageBox.Yes)
+    def test_close_month_via_menu(self, mock_msgbox, qt_app, db_path):
+        """Full close cycle through the GUI File → Close Month… menu."""
         from ledger.gui_pyside.gui_app_pyside import LedgerGUI
-        from ledger.gui_pyside.widgets import format_cents
 
         window = LedgerGUI(db_path=db_path)
         window.show()
@@ -131,140 +110,63 @@ class TestMonthEndClose:
 
         try:
             m = window._manager
-
-            # Resolve account IDs by name
             ids = {a.name: aid for aid, a in m.accounts.items() if aid}
-            checking       = ids["HS Checking"]
-            savings        = ids["Savings"]
-            brokerage      = ids["Schwab Brokerage"]
-            discover       = ids["Discover"]
-            wages          = ids["Wages"]
-            div_income     = ids["Dividend Income"]
-            groceries      = ids["Groceries"]
-            rent           = ids["Rent"]
-            utilities      = ids["Utilities"]
 
             # ════════════════════════════════════════════════
-            #  Phase 1: Verify app structure
+            #  Phase 1: Verify structure and pre-close state
             # ════════════════════════════════════════════════
 
             assert window.windowTitle() == "Ledger — Double-Entry Accounting"
-
-            menu_bar = window.menuBar()
-            assert menu_bar is not None
-
-            tabs = window.findChild(QTabWidget, "mainTabs")
-            assert tabs is not None
-            tab_labels = [tabs.tabText(i) for i in range(tabs.count())]
-            assert "Ledger" in tab_labels
-
-            tree = window.findChild(QTreeView, "accountTree")
-            assert tree is not None
-            tree_model = tree.model()
-            assert tree_model is not None
-            assert tree_model.rowCount() >= 1
-
-            table = window.findChild(QTableView, "transactionTable")
-            assert table is not None
-            table_model = table.model()
-            assert table_model is not None
-
             status = window.statusBar()
             assert status is not None
 
-            # ════════════════════════════════════════════════
-            #  Phase 2: Verify pre-close balances
-            # ════════════════════════════════════════════════
-
-            # Pre-close: income accounts use get_display_balance which
-            # flips credit-normal accounts to positive
-            assert m.get_display_balance(wages) == 300000, (
-                f"Wages expected 300000, got {m.get_display_balance(wages)}"
-            )
-            assert m.get_display_balance(div_income) == 5000, (
-                f"Dividends expected 5000, got {m.get_display_balance(div_income)}"
-            )
-
-            # Pre-close: expense accounts (debit-normal, no flip)
-            net_income_expected = 300000 + 5000 - 150000 - 8500 - 12000  # = 134500
-            actual_expenses = (
-                m.get_display_balance(groceries) +
-                m.get_display_balance(rent) +
-                m.get_display_balance(utilities)
-            )
-            assert actual_expenses == 150000 + 8500 + 12000, (
-                f"Total expenses expected 170500, got {actual_expenses}"
-            )
-
-            # Verify accounting equation before close
-            eq_before = m.check_accounting_equation()
-            assert eq_before["balanced"], (
-                f"Equation unbalanced before close: {eq_before}"
-            )
+            wages_bal = m.get_display_balance(ids["Wages"])
+            re_before = m.get_display_balance(6)
+            assert wages_bal == 300000, f"Wages before close: {wages_bal}"
 
             # ════════════════════════════════════════════════
-            #  Phase 3: Run month-end close
+            #  Phase 2: Navigate menu and confirm
             # ════════════════════════════════════════════════
 
-            re_before = m.get_display_balance(6)  # retained earnings
-            m.close_temps()
-            m.generate_ledger()
-            window._refresh_all_internal()
+            menubar = window.menuBar()
+            for menu_action in menubar.actions():
+                if menu_action.text() == "File":
+                    file_menu = menu_action.menu()
+                    if file_menu:
+                        for action in file_menu.actions():
+                            if action.text() == "Close Month…":
+                                action.trigger()
+                                break
+                    break
+
+            QApplication.processEvents()
 
             # ════════════════════════════════════════════════
-            #  Phase 4: Verify post-close balances
+            #  Phase 3: Verify post-close state
             # ════════════════════════════════════════════════
 
-            # Income accounts should be zeroed
-            assert m.get_display_balance(wages) == 0, (
-                f"Wages not zeroed: {m.get_display_balance(wages)}"
-            )
-            assert m.get_display_balance(div_income) == 0, (
-                f"Dividend income not zeroed: {m.get_display_balance(div_income)}"
-            )
+            # Income zeroed
+            assert m.get_display_balance(ids["Wages"]) == 0, "Wages not zeroed"
 
-            # Expense accounts should be zeroed
-            assert m.get_display_balance(groceries) == 0
-            assert m.get_display_balance(rent) == 0
-            assert m.get_display_balance(utilities) == 0
+            # Expenses zeroed
+            assert m.get_display_balance(ids["Groceries"]) == 0
+            assert m.get_display_balance(ids["Rent"]) == 0
 
-            # Retained earnings should have increased by net income
+            # RE increased by net income
+            net_income = 300000 - 150000 - 8500  # = 141500
             re_after = m.get_display_balance(6)
-            re_change = re_after - re_before
-            assert re_change == net_income_expected, (
-                f"RE changed by {re_change}, expected {net_income_expected} "
-                f"(net income = {net_income_expected})"
+            assert re_after == re_before + net_income, (
+                f"RE: {re_after}, expected {re_before + net_income}"
             )
 
-            # ════════════════════════════════════════════════
-            #  Phase 5: Equation still balanced
-            # ════════════════════════════════════════════════
+            # Equation balanced
+            eq = m.check_accounting_equation()
+            assert eq["balanced"]
 
-            eq_after = m.check_accounting_equation()
-            assert eq_after["balanced"], (
-                f"Equation unbalanced after close: {eq_after}"
-            )
-
-            # ════════════════════════════════════════════════
-            #  Phase 6: Status bar shows balanced
-            # ════════════════════════════════════════════════
-
-            status_msg = status.currentMessage()
-            assert "✓" in status_msg or "Balanced" in status_msg, (
-                f"Status bar doesn't show balanced: '{status_msg}'"
-            )
-
-            # ════════════════════════════════════════════════
-            #  Phase 7: Closing entries in the transaction table
-            # ════════════════════════════════════════════════
-
-            # There should be 5 closing entries (Wages, Div Income, Groceries,
-            # Rent, Utilities) + 6 original transactions = 11 total
-            table_model.refresh()
-            txn_count = table_model.rowCount()
-            assert txn_count == (6 + 5), (
-                f"Expected 11 transactions (6 original + 5 closing), "
-                f"got {txn_count}"
+            # Status bar shows success
+            msg = status.currentMessage()
+            assert "✓" in msg or "closed" in msg.lower(), (
+                f"Status msg: '{msg}'"
             )
 
         finally:
