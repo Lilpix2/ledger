@@ -27,7 +27,7 @@ from typing import Any
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenuBar,
+    QComboBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenuBar,
     QPushButton, QSplitter, QStatusBar, QTabWidget, QTableView,
     QTreeView, QVBoxLayout, QWidget,
 )
@@ -46,7 +46,7 @@ class LedgerTableModel(QAbstractTableModel):
     def __init__(self, manager: AccountManager, parent: Any = None) -> None:
         super().__init__(parent)
         self._manager = manager
-        self._transactions: list[tuple[int, str, str, str]] = []
+        self._transactions: list[tuple[str, str, str]] = []
         self._filters: dict[str, Any] = {}
 
     def set_filters(self, **kwargs: Any) -> None:
@@ -59,7 +59,6 @@ class LedgerTableModel(QAbstractTableModel):
         for txn_id, txn in self._manager.journal.transactions.items():
             total = sum(s.amount for s in txn.splits if s.amount > 0)
             self._transactions.append((
-                txn_id,
                 txn.date.strftime(DATE_STR),
                 txn.description[:60],
                 format_cents(total),
@@ -142,6 +141,63 @@ class PortfolioTableModel(QAbstractTableModel):
                     "Market Val", "P&L", "P&L %"]
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             return headers[section]
+        return None
+
+
+# ── Budget table model ──────────────────────────────────────────────
+
+
+class BudgetTableModel(QAbstractTableModel):
+    """Table model for budget vs actual display.
+
+    Columns: Account, Budget, Actual, Remaining, Used %.
+    """
+
+    HEADERS = ["Account", "Budget", "Actual", "Remaining", "Used %"]
+
+    def __init__(self, manager: AccountManager, month: str = "", parent: Any = None) -> None:
+        super().__init__(parent)
+        self._manager = manager
+        self._month = month
+        self._data: list[dict] = []
+
+    def set_month(self, month: str) -> None:
+        """Change the selected month and refresh data."""
+        self._month = month
+        self.refresh()
+
+    def refresh(self) -> None:
+        self.beginResetModel()
+        if self._month:
+            self._data = self._manager.budget_vs_actual(self._month)
+        else:
+            self._data = []
+        self.endResetModel()
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return len(self._data)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 5
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            row = self._data[index.row()]
+            if index.column() == 0:
+                return row["name"]
+            elif index.column() == 4:
+                return f"{row['pct_used']:.1f}%"
+            else:
+                key = ["budget", "actual", "remaining"][index.column() - 1]
+                return format_cents(row[key])
+        return None
+
+    def headerData(self, section: int, orientation: Qt.Orientation,
+                   role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return self.HEADERS[section]
         return None
 
 
@@ -232,6 +288,7 @@ class LedgerGUI(QMainWindow):
 
         self._build_ledger_tab()
         self._build_portfolio_tab()
+        self._build_budget_tab()
 
     def _build_ledger_tab(self) -> None:
         tab = QWidget()
@@ -323,6 +380,59 @@ class LedgerGUI(QMainWindow):
 
         self._refresh_portfolio()
 
+    def _build_budget_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        self._tabs.addTab(tab, "Budgets")
+
+        # ── Month selector ──
+        month_layout = QHBoxLayout()
+        month_layout.addWidget(QLabel("Month:"))
+        self._budget_month_combo = QComboBox()
+        self._budget_month_combo.setObjectName("budgetMonthCombo")
+        months = sorted(set(m for _, m, _ in self._manager.get_budgets()))
+        self._budget_month_combo.addItems(months)
+        month_layout.addWidget(self._budget_month_combo)
+        month_layout.addStretch()
+        layout.addLayout(month_layout)
+
+        # ── Summary label ──
+        self._budget_summary = QLabel("")
+        self._budget_summary.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self._budget_summary)
+
+        # ── Table ──
+        self._budget_table = QTableView()
+        self._budget_table.setObjectName("budgetTable")
+        initial_month = months[0] if months else ""
+        self._budget_model = BudgetTableModel(self._manager, initial_month)
+        self._budget_table.setModel(self._budget_model)
+        self._budget_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self._budget_table)
+
+        # ── Wire combo ──
+        self._budget_month_combo.currentIndexChanged.connect(self._on_budget_month_change)
+
+        # ── Initial load ──
+        self._refresh_budget()
+
+    def _on_budget_month_change(self) -> None:
+        self._refresh_budget()
+
+    def _refresh_budget(self) -> None:
+        month = self._budget_month_combo.currentText()
+        self._budget_model.set_month(month)
+        total_budget = sum(
+            row["budget"] for row in self._budget_model._data
+        )
+        total_actual = sum(
+            row["actual"] for row in self._budget_model._data
+        )
+        self._budget_summary.setText(
+            f"Total Budgeted: {format_cents(total_budget)}  |  "
+            f"Total Actual: {format_cents(total_actual)}"
+        )
+
     def _refresh_portfolio(self) -> None:
         self._port_model.refresh()
         total_mv = sum(h[5] for h in self._port_model._holdings)
@@ -371,6 +481,7 @@ class LedgerGUI(QMainWindow):
         self._tree.setModel(self._tree_model)
         self._refresh_status()
         self._refresh_portfolio()
+        self._refresh_budget()
 
     def _refresh_tree(self) -> None:
         """Rebuild the account tree model from scratch."""
