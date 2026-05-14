@@ -238,3 +238,30 @@ class DatabaseController:
                 "VALUES (?, ?, ?)",
                 prices,
             )
+
+    # ── Budgets ─────────────────────────────────────────────────────
+
+    def load_budgets(self) -> list[tuple[int, str, int]]:
+        """Load all budget entries."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT account_id, month, amount_cents FROM budgets"
+            ).fetchall()
+            return [(r["account_id"], r["month"], r["amount_cents"]) for r in rows]
+
+    def save_budget(self, account_id: int, month: str, amount_cents: int) -> None:
+        """Set or update a budget entry."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO budgets (account_id, month, amount_cents) "
+                "VALUES (?, ?, ?)",
+                (account_id, month, amount_cents),
+            )
+
+    def delete_budget(self, account_id: int, month: str) -> None:
+        """Remove a budget entry."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM budgets WHERE account_id = ? AND month = ?",
+                (account_id, month),
+            )

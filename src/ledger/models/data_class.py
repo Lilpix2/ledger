@@ -76,3 +76,16 @@ class Price:
     ticker: str
     date: str
     price_cents: int
+
+
+@dataclass
+class Budget:
+    """A monthly budget for an account.
+
+    ``account_id`` — the account being budgeted.
+    ``month`` — budget period in YYYY-MM format.
+    ``amount_cents`` — planned amount in cents.
+    """
+    account_id: int
+    month: str
+    amount_cents: int

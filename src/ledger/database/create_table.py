@@ -50,6 +50,16 @@ CREATE TABLE IF NOT EXISTS prices (
 );
 """
 
+CREATE_BUDGETS = """
+CREATE TABLE IF NOT EXISTS budgets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL REFERENCES accounts(account_id),
+    month TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    UNIQUE(account_id, month)
+);
+"""
+
 
 def _migrate_accounts_uniqueness(conn):
     """Replace global UNIQUE(name) with UNIQUE(name, parent_id).
@@ -89,6 +99,7 @@ def ensure_tables(conn):
     conn.execute(CREATE_SPLITS)
     conn.execute(CREATE_HOLDINGS)
     conn.execute(CREATE_PRICES)
+    conn.execute(CREATE_BUDGETS)
     conn.commit()
 
     # Migration: drop old single-split columns if they exist

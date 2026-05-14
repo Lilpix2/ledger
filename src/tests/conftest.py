@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from ledger.controllers.accounts import AccountManager
-from ledger.models.data_class import Split, JournalTransaction, Holding, Price
+from ledger.models.data_class import Split, JournalTransaction, Holding, Price, Budget
 
 
 # ── Mock DatabaseController (zero disk I/O) ────────────────────
@@ -26,6 +26,7 @@ class MockDB:
         self._txns: list[tuple[str, str, list[Split]]] = []
         self._holdings: dict[int, dict[str, tuple[float, int]]] = {}
         self._prices: list[tuple[str, str, int]] = []
+        self._budgets: dict[int, dict[str, int]] = {}
         self._next_id = 1
 
     def ensure_tables(self) -> None:
@@ -115,6 +116,22 @@ class MockDB:
                 self._prices[i] = (price.ticker, price.date, price.price_cents)
                 return
         self._prices.append((price.ticker, price.date, price.price_cents))
+
+    def save_budget(self, account_id: int, month: str, amount_cents: int) -> None:
+        if account_id not in self._budgets:
+            self._budgets[account_id] = {}
+        self._budgets[account_id][month] = amount_cents
+
+    def delete_budget(self, account_id: int, month: str) -> None:
+        if account_id in self._budgets:
+            self._budgets[account_id].pop(month, None)
+
+    def load_budgets(self) -> list[tuple[int, str, int]]:
+        result: list[tuple[int, str, int]] = []
+        for aid, months in self._budgets.items():
+            for month, amount in months.items():
+                result.append((aid, month, amount))
+        return result
 
     def bulk_save_prices(self, prices: list[tuple[str, str, int]]) -> None:
         self._prices.extend(prices)

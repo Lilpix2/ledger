@@ -80,6 +80,8 @@ class AccountManager:
                     acct.holdings[holding.ticker] = holding
 
         self.account_num = max(self.accounts.keys()) + 1
+        self._budgets: dict[int, dict[str, int]] = {}  # {account_id: {month: amount_cents}}
+        self._load_budgets()
         self.generate_ledger()
 
     def _generate_parents(self):
@@ -423,6 +425,95 @@ class AccountManager:
         if self.is_debit_normal(account_id):
             return raw
         return -raw
+
+    # ── Budgets ────────────────────────────────────────────────────────
+
+    def _load_budgets(self) -> None:
+        """Load budgets from the database into memory."""
+        for account_id, month, amount_cents in self.db.load_budgets():
+            if account_id not in self._budgets:
+                self._budgets[account_id] = {}
+            self._budgets[account_id][month] = amount_cents
+
+    def set_budget(self, account_id: int, month: str, amount_cents: int) -> None:
+        """Set or update a monthly budget for an account."""
+        if account_id not in self._budgets:
+            self._budgets[account_id] = {}
+        self._budgets[account_id][month] = amount_cents
+        self.db.save_budget(account_id, month, amount_cents)
+
+    def get_budget(self, account_id: int, month: str) -> int | None:
+        """Return the budget amount for an account in a month, or None."""
+        if account_id in self._budgets and month in self._budgets[account_id]:
+            return self._budgets[account_id][month]
+        return None
+
+    def get_budgets(self, month: str | None = None) -> list[tuple[int, str, int]]:
+        """Return all budgets, optionally filtered by month."""
+        results: list[tuple[int, str, int]] = []
+        for account_id, months in self._budgets.items():
+            for m, amount in months.items():
+                if month is None or m == month:
+                    results.append((account_id, m, amount))
+        return results
+
+    def clear_budget(self, account_id: int, month: str) -> None:
+        """Remove a single budget entry."""
+        if account_id in self._budgets and month in self._budgets[account_id]:
+            del self._budgets[account_id][month]
+            self.db.delete_budget(account_id, month)
+
+    def clear_all_budgets(self, month: str) -> None:
+        """Remove all budgets for a given month."""
+        ids_to_clear = [
+            aid for aid, months in self._budgets.items()
+            if month in months
+        ]
+        for aid in ids_to_clear:
+            del self._budgets[aid][month]
+            self.db.delete_budget(aid, month)
+
+    def budget_vs_actual(self, month: str) -> list[dict]:
+        """Compare budget vs actual spending for a month.
+
+        Returns a list of dicts, one per budgeted account, with:
+            account_id, name, budget, actual, remaining, pct_used
+
+        If an account has children, actual is summed across all descendants.
+        """
+        results: list[dict] = []
+        budgets = self.get_budgets(month)
+        for account_id, m, budget_amount in budgets:
+            if account_id not in self.accounts:
+                continue
+            acct = self.accounts[account_id]
+            account_name = acct.name
+
+            # Get descendants or just this account
+            descendant_ids = self.get_descendant_ids(account_id)
+            if not descendant_ids:
+                descendant_ids = [account_id]
+
+            actual = sum(
+                self.accounts[aid].get_balance()
+                for aid in descendant_ids
+                if aid in self.accounts
+            )
+            remaining = budget_amount - actual
+            pct_used = (
+                (actual / budget_amount) * 100.0
+                if budget_amount > 0
+                else (float('inf') if actual > 0 else 0.0)
+            )
+            results.append({
+                "account_id": account_id,
+                "name": account_name,
+                "budget": budget_amount,
+                "actual": actual,
+                "remaining": remaining,
+                "pct_used": pct_used,
+            })
+        return results
 
     # ── Holdings / Positions ────────────────────────────────────────
 
