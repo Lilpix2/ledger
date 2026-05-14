@@ -417,14 +417,28 @@ class LedgerGUI(QMainWindow):
         month_layout.addStretch()
         layout.addLayout(month_layout)
 
+        # ── Toolbar ──
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+
+        add_btn = QPushButton("Add Budget")
+        add_btn.setObjectName("AddBudget")
+        add_btn.clicked.connect(self._add_budget)
+        toolbar_layout.addWidget(add_btn)
+        toolbar_layout.addStretch()
+        layout.addWidget(toolbar)
+
         # ── Summary label ──
         self._budget_summary = QLabel("")
         self._budget_summary.setStyleSheet("font-weight: bold;")
         layout.addWidget(self._budget_summary)
 
-        # ── Table ──
+        # ── Table (with context menu) ──
         self._budget_table = QTableView()
         self._budget_table.setObjectName("budgetTable")
+        self._budget_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._budget_table.customContextMenuRequested.connect(self._show_budget_context_menu)
         initial_month = months[0] if months else ""
         self._budget_model = BudgetTableModel(self._manager, initial_month)
         self._budget_table.setModel(self._budget_model)
@@ -453,6 +467,85 @@ class LedgerGUI(QMainWindow):
             f"Total Budgeted: {format_cents(total_budget)}  |  "
             f"Total Actual: {format_cents(total_actual)}"
         )
+
+    def _rebuild_month_combo(self) -> None:
+        """Rebuild the month combo from current budgets."""
+        current = self._budget_month_combo.currentText()
+        self._budget_month_combo.blockSignals(True)
+        self._budget_month_combo.clear()
+        months = sorted(set(m for _, m, _ in self._manager.get_budgets()))
+        self._budget_month_combo.addItems(months)
+        idx = self._budget_month_combo.findText(current)
+        if idx >= 0:
+            self._budget_month_combo.setCurrentIndex(idx)
+        self._budget_month_combo.blockSignals(False)
+
+    # ── Budget CRUD ────────────────────────────────────
+
+    def _add_budget(self) -> None:
+        from ledger.gui_pyside.dialogs import BudgetDialog
+        month = self._budget_month_combo.currentText()
+        dlg = BudgetDialog(self._manager, month, self._on_budget_dialog_success)
+        dlg.exec()
+
+    def _on_budget_dialog_success(self) -> None:
+        self._rebuild_month_combo()
+        self._refresh_all_internal()
+
+    def _show_budget_context_menu(self, pos: QPoint) -> None:
+        menu = self._build_budget_context_menu()
+        if menu:
+            menu.exec(self._budget_table.viewport().mapToGlobal(pos))
+
+    def _build_budget_context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        edit_action = menu.addAction("Edit Budget…")
+        edit_action.triggered.connect(self._edit_budget)
+        del_action = menu.addAction("Delete Budget…")
+        del_action.triggered.connect(self._delete_budget)
+        # Disable if nothing selected or no budgets loaded
+        if not self._budget_model._data:
+            edit_action.setEnabled(False)
+            del_action.setEnabled(False)
+        return menu
+
+    def _edit_budget(self) -> None:
+        if not self._budget_model._data:
+            return
+        idxes = self._budget_table.selectedIndexes()
+        if not idxes:
+            return
+        row = idxes[0].row()
+        row_data = self._budget_model._data[row]
+        from ledger.gui_pyside.dialogs import BudgetDialog
+        month = self._budget_month_combo.currentText()
+        dlg = BudgetDialog(
+            self._manager, month, self._on_budget_dialog_success,
+            edit_account_id=row_data["account_id"],
+            edit_amount=row_data["budget"],
+        )
+        dlg.exec()
+
+    def _delete_budget(self) -> None:
+        if not self._budget_model._data:
+            return
+        idxes = self._budget_table.selectedIndexes()
+        if not idxes:
+            return
+        row = idxes[0].row()
+        row_data = self._budget_model._data[row]
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Delete Budget",
+            f"Delete budget for '{row_data['name']}'?\n\n"
+            f"This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            month = self._budget_month_combo.currentText()
+            self._manager.clear_budget(row_data["account_id"], month)
+            self._on_budget_dialog_success()
 
     def _refresh_portfolio(self) -> None:
         self._port_model.refresh()
@@ -623,6 +716,7 @@ class LedgerGUI(QMainWindow):
         self._tree.setModel(self._tree_model)
         self._refresh_status()
         self._refresh_portfolio()
+        self._rebuild_month_combo()
         self._refresh_budget()
 
     def _refresh_tree(self) -> None:

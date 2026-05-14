@@ -28,6 +28,7 @@ def format_cents(cents: int | None) -> str:
 def build_account_choices(
     manager: Any,
     subtype_filter: set[str] | None = None,
+    acct_type_filter: set[str] | None = None,
 ) -> tuple[list[str], dict[str, int]]:
     """Build a list of account labels and a label→ID mapping from tree data."""
     choices: list[str] = []
@@ -41,6 +42,10 @@ def build_account_choices(
                 continue
             if subtype_filter is not None:
                 if acct.account_subtype not in subtype_filter:
+                    _walk(cid, depth + 1)
+                    continue
+            if acct_type_filter is not None:
+                if acct.acct_type not in acct_type_filter:
                     _walk(cid, depth + 1)
                     continue
             prefix = "  " * depth
@@ -78,6 +83,7 @@ class AccountSelector(QComboBox):
         self,
         manager: Any,
         subtype_filter: set[str] | None = None,
+        acct_type_filter: set[str] | None = None,
         parent: QComboBox | None = None,
         object_name: str = "",
     ) -> None:
@@ -87,7 +93,9 @@ class AccountSelector(QComboBox):
         self._manager = manager
         self._label_map: dict[str, int] = {}
 
-        choices, self._label_map = build_account_choices(manager, subtype_filter)
+        choices, self._label_map = build_account_choices(
+            manager, subtype_filter, acct_type_filter,
+        )
         for label in choices:
             self.addItem(label)
         self.setEditable(True)

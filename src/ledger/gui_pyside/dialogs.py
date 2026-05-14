@@ -783,3 +783,141 @@ class DeleteAccountDialog(QDialog):
             self.accept()
         except Exception as e:
             QMessageBox.warning(self, "Error", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  BudgetDialog
+# ═══════════════════════════════════════════════════════════════════
+
+
+class BudgetDialog(QDialog):
+    """Modal dialog for adding or editing a monthly budget.
+
+    Create mode: account selector (expense accounts only), month selector,
+    amount input, submit.
+
+    Edit mode: pre-populated fields, updates existing budget.
+
+    Widgets:
+        budgetAcctCombo   — QComboBox filtered to EXPENSE accounts
+        budgetMonthCombo  — QComboBox with month options
+        budgetAmountInput — QLineEdit for amount in cents
+        budgetSubmitBtn   — QPushButton (Add Budget / Save Budget)
+    """
+
+    def __init__(
+        self,
+        manager: AccountManager,
+        month: str,
+        on_success: Callable[[], None],
+        edit_account_id: int | None = None,
+        edit_amount: int | None = None,
+    ) -> None:
+        super().__init__()
+        self._manager = manager
+        self._on_success = on_success
+        self._month = month
+        self._edit_account_id = edit_account_id
+        self._edit_amount = edit_amount
+        self._is_edit = edit_account_id is not None
+
+        self.setWindowTitle("Edit Budget" if self._is_edit else "Add Budget")
+        self.setMinimumWidth(400)
+        self._build()
+
+    def _build(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # ── Account selector ──
+        acct_layout = QHBoxLayout()
+        acct_layout.addWidget(QLabel("Account:"))
+        self._acct_combo = AccountSelector(
+            self._manager,
+            object_name="budgetAcctCombo",
+            acct_type_filter={"EXPENSE"},
+        )
+        acct_layout.addWidget(self._acct_combo)
+        layout.addLayout(acct_layout)
+
+        # ── Month combo ──
+        month_layout = QHBoxLayout()
+        month_layout.addWidget(QLabel("Month:"))
+        self._month_combo = QComboBox()
+        self._month_combo.setObjectName("budgetMonthCombo")
+        # Populate with months that have budgets, plus the passed month
+        all_months = sorted(set(
+            m for _, m, _ in self._manager.get_budgets()
+        ) | {self._month})
+        self._month_combo.addItems(all_months)
+        # Select the passed month
+        idx = self._month_combo.findText(self._month)
+        if idx >= 0:
+            self._month_combo.setCurrentIndex(idx)
+        month_layout.addWidget(self._month_combo)
+        layout.addLayout(month_layout)
+
+        # ── Amount input ──
+        amt_layout = QHBoxLayout()
+        amt_layout.addWidget(QLabel("Amount (cents):"))
+        self._amt_input = QLineEdit()
+        self._amt_input.setObjectName("budgetAmountInput")
+        if self._edit_amount is not None:
+            self._amt_input.setText(str(self._edit_amount))
+        amt_layout.addWidget(self._amt_input)
+        layout.addLayout(amt_layout)
+
+        # ── Pre-select account in edit mode ──
+        if self._edit_account_id is not None:
+            self._acct_combo.selected_id = self._edit_account_id
+            # Lock the account combo in edit mode
+            self._acct_combo.setEnabled(False)
+            self._month_combo.setEnabled(False)
+
+        # ── Buttons ──
+        btn_layout = QHBoxLayout()
+        submit_text = "Save Budget" if self._is_edit else "Add Budget"
+        self._submit_btn = QPushButton(submit_text)
+        self._submit_btn.setObjectName("budgetSubmitBtn")
+        self._submit_btn.clicked.connect(self._submit)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(self._submit_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+    def _submit(self) -> None:
+        amt_text = self._amt_input.text().strip()
+        if not amt_text:
+            QMessageBox.warning(self, "Error", "Amount is required")
+            self.reject()
+            return
+
+        try:
+            amount = int(amt_text)
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Amount must be a number (cents)")
+            self.reject()
+            return
+
+        if amount <= 0:
+            QMessageBox.warning(self, "Error", "Amount must be positive")
+            self.reject()
+            return
+
+        acct_id = self._acct_combo.selected_id
+        if acct_id is None:
+            QMessageBox.warning(self, "Error", "Select a valid account")
+            self.reject()
+            return
+
+        month = self._month_combo.currentText()
+        try:
+            self._manager.set_budget(acct_id, month, amount)
+            self._on_success()
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"{type(e).__name__}: {e}")
+            self.reject()
